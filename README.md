@@ -28,5 +28,3 @@ No key? It runs in **mock mode** so the demo still works.
 Secrets in env vars only. Scraped content is treated as untrusted data. Every create/approve/reject is audit-logged.
 Nothing is publishable without human approval.
 
-## Roadmap (hackathon day)
-Video/Reels (script -> TTS -> MoviePy), lead-gen agent, competitor digest, Project 2 poster worker (Buffer API).
