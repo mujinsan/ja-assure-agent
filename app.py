@@ -1,0 +1,107 @@
+import difflib
+import pandas as pd
+import streamlit as st
+import db, pipeline
+from agents import llm
+from agents.llm import live, MODEL
+from config import BRANDS, PLATFORMS, LANGUAGES, FEEDBACK_TAGS
+
+st.set_page_config(page_title="JA Assure AI Marketing Agent", layout="wide")
+db.init()
+
+st.title("JA Assure - AI Marketing Agent")
+if not live():
+    mode = "MOCK (no GEMINI_API_KEY)"
+elif llm.last_error:
+    mode = "LIVE - last call FAILED, using mock"
+elif llm.last_provider == "groq":
+    mode = f"LIVE (Gemini chain exhausted -> Groq fallback: {llm.GROQ_MODEL})"
+elif llm.last_model and llm.last_model != MODEL:
+    mode = f"LIVE (fallback model: {llm.last_model})"
+else:
+    mode = f"LIVE ({MODEL})"
+if llm.exhausted_models:
+    mode += f" | exhausted this session: {', '.join(sorted(llm.exhausted_models))}"
+st.caption(f"Mode: {mode}")
+
+gen, rev, queue, insights = st.tabs(["Generate", "Review", "Approved queue", "Learning & audit"])
+
+with gen:
+    c1, c2 = st.columns(2)
+    brand = c1.selectbox("Brand", list(BRANDS))
+    language = c2.selectbox("Language", LANGUAGES)
+    platforms = st.multiselect("Platforms", list(PLATFORMS), default=["LinkedIn", "Instagram"])
+    topic = st.text_input("Topic / idea", "Why jewellers need cover for stock in transit")
+    use_research = st.checkbox("Use live research (needs TAVILY_API_KEY)")
+    if st.button("Run pipeline", type="primary", disabled=not platforms):
+        with st.spinner("Research -> content -> compliance..."):
+            created, researched = pipeline.run(brand, platforms, language, topic, use_research)
+        if llm.last_error:
+            st.warning(f"Gemini call failed, showing mock output: {llm.last_error}")
+        st.success(f"Created {len(created)} assets" + (" with research context" if researched else ""))
+        for aid, p, v, ok, reasons in created:
+            if ok:
+                st.write(f"#{aid} {p} variant {v}: passed compliance -> review")
+            else:
+                st.error(f"#{aid} {p} variant {v}: BLOCKED - {'; '.join(reasons)}")
+
+with rev:
+    show_blocked = st.toggle("Also show compliance-blocked assets")
+    items = db.list_assets("pending") + (db.list_assets("blocked") if show_blocked else [])
+    if not items:
+        st.info("Nothing to review.")
+    for a in items:
+        label = f"#{a['id']} {a['brand']} | {a['platform']} | {a['language']} | variant {a['variant']}"
+        with st.expander(("BLOCKED " if a["status"] == "blocked" else "") + label, expanded=True):
+            if a["compliance_reasons"]:
+                st.warning(a["compliance_reasons"])
+            if a["lessons_used"]:
+                st.caption(f"Generated with {a['lessons_used']} past lessons applied")
+            text = st.text_area("Content (edit before approving)", a["content"], key=f"t{a['id']}", height=150)
+            st.caption(f"Image idea: {a['image_idea']}")
+            c1, c2, c3 = st.columns([1, 1, 2])
+            tag = c3.selectbox("Reason tag", FEEDBACK_TAGS, key=f"g{a['id']}")
+            note = c3.text_input("Note", key=f"n{a['id']}")
+            if c1.button("Approve", key=f"a{a['id']}", disabled=a["status"] == "blocked"):
+                edited = text.strip() != a["content"].strip()
+                db.review(a["id"], "approve", text, tag if edited else None, note)
+                st.rerun()
+            if c2.button("Reject", key=f"r{a['id']}"):
+                db.review(a["id"], "reject", text, tag, note)
+                st.rerun()
+
+with queue:
+    st.caption("Project 2 contract: a worker polls status='approved', posts, sets status='scheduled' + post_id.")
+    rows = db.list_assets("approved") + db.list_assets("scheduled")
+    if rows:
+        st.dataframe(pd.DataFrame(rows)[["id", "brand", "platform", "language", "content", "status", "post_id"]],
+                     use_container_width=True)
+    else:
+        st.info("No approved assets yet.")
+
+with insights:
+    reviewed = [a for a in db.list_assets() if a["status"] in ("approved", "rejected", "scheduled")]
+    reviewed.sort(key=lambda a: a["reviewed_at"] or "")
+    if reviewed:
+        df = pd.DataFrame(reviewed)
+        df["rejected"] = (df["status"] == "rejected").astype(int)
+        df["edit_amount"] = [
+            round(1 - difflib.SequenceMatcher(None, o or "", c or "").ratio(), 3)
+            for o, c in zip(df["original_content"], df["content"])]
+        df["batch"] = [i // 4 + 1 for i in range(len(df))]
+        trend = df.groupby("batch")[["rejected", "edit_amount"]].mean()
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Reviewed", len(df))
+        m2.metric("Rejection rate", f"{df['rejected'].mean():.0%}")
+        m3.metric("Lessons stored", len(db.all_lessons()))
+        st.subheader("Is it improving? (per batch of 4 reviews)")
+        st.line_chart(trend)
+    else:
+        st.info("Review some assets to see the learning curve.")
+    st.subheader("Lessons learned memory")
+    ls = db.all_lessons()
+    if ls:
+        st.dataframe(pd.DataFrame(ls)[["id", "brand", "platform", "tag", "note", "bad_example"]],
+                     use_container_width=True)
+    st.subheader("Audit log")
+    st.dataframe(pd.DataFrame(db.audit()), use_container_width=True)
