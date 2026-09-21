@@ -13,7 +13,7 @@ FALLBACK_MODELS = [m.strip() for m in
                    os.getenv("GEMINI_FALLBACK_MODELS",
                              "gemini-3.5-flash-lite,gemini-3.5-flash").split(",")
                    if m.strip()]
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _client = None
 last_error = None     # str of the most recent failed call, None if the last call succeeded
