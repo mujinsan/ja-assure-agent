@@ -1,0 +1,9 @@
+# Prism dark theme. Sets native chrome (popovers, scrollbars, toolbar) that CSS
+# can't reach; theme.py layers the finer styling on top.
+[theme]
+base = "dark"
+primaryColor = "#b9c6d8"
+backgroundColor = "#0a0a0c"
+secondaryBackgroundColor = "#141418"
+textColor = "#e6e6ea"
+font = "sans serif"

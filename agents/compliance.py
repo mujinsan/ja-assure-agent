@@ -20,6 +20,26 @@ def hard_reasons(text):
     """Deterministic regex layer. Always per-variant, never batched."""
     return [msg for pat, msg in HARD_RULES if re.search(pat, text, re.I)]
 
+def split_reasons(reasons_text):
+    """Split a stored compliance_reasons string into the two UI layers.
+
+    Input is what db stores: reasons joined by "; ", where entries from the LLM
+    rubric carry an "LLM: " prefix and everything else came from HARD_RULES.
+    An empty string means the asset passed both layers.
+
+      "Guarantees an outcome; LLM: reads as a hard sell"
+
+    Returns (rule_line, rule_ok, ai_line, ai_ok) for theme.compliance_boxes():
+    a short human sentence per layer plus whether that layer passed.
+    """
+    parts = [p.strip() for p in (reasons_text or "").split(";") if p.strip()]
+    rule_hits = [p for p in parts if not p.startswith("LLM:")]
+    ai_hits = [p[4:].strip() for p in parts if p.startswith("LLM:")]
+
+    # TODO(human): turn rule_hits / ai_hits into the two display lines.
+    #   total rules available = len(HARD_RULES)
+    return ("", not rule_hits, "", not ai_hits)
+
 def check_batch(items):
     """items: list of (key, text). One LLM call for the whole run.
 

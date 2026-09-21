@@ -1,15 +1,15 @@
 import difflib
 import pandas as pd
 import streamlit as st
-import db, pipeline
-from agents import llm
+import db, pipeline, theme
+from agents import llm, compliance
 from agents.llm import live, MODEL
 from config import BRANDS, PLATFORMS, LANGUAGES, FEEDBACK_TAGS
 
 st.set_page_config(page_title="JA Assure AI Marketing Agent", layout="wide")
 db.init()
+st.markdown(theme.CSS, unsafe_allow_html=True)
 
-st.title("JA Assure - AI Marketing Agent")
 if not live():
     mode = "MOCK (no GEMINI_API_KEY)"
 elif llm.last_error:
@@ -21,8 +21,11 @@ elif llm.last_model and llm.last_model != MODEL:
 else:
     mode = f"LIVE ({MODEL})"
 if llm.exhausted_models:
-    mode += f" | exhausted this session: {', '.join(sorted(llm.exhausted_models))}"
-st.caption(f"Mode: {mode}")
+    mode += f" | exhausted: {', '.join(sorted(llm.exhausted_models))}"
+st.markdown(
+    theme.header("Research → Create → Comply → Review → Learn", mode,
+                 ok=live() and not llm.last_error),
+    unsafe_allow_html=True)
 
 gen, rev, queue, insights = st.tabs(["Generate", "Review", "Approved queue", "Learning & audit"])
 
@@ -38,7 +41,13 @@ with gen:
             created, researched = pipeline.run(brand, platforms, language, topic, use_research)
         if llm.last_error:
             st.warning(f"Gemini call failed, showing mock output: {llm.last_error}")
-        st.success(f"Created {len(created)} assets" + (" with research context" if researched else ""))
+        blocked = sum(1 for *_, ok, _ in created if not ok)
+        st.markdown(theme.pipeline_steps([
+            ("Researched" if researched else "Research skipped", researched),
+            (f"Wrote {len(created)} variants", bool(created)),
+            ("Compliance checked", True),
+            (f"{len(created) - blocked} awaiting review", False),
+        ]), unsafe_allow_html=True)
         for aid, p, v, ok, reasons in created:
             if ok:
                 st.write(f"#{aid} {p} variant {v}: passed compliance -> review")
@@ -51,18 +60,33 @@ with rev:
     if not items:
         st.info("Nothing to review.")
     for a in items:
-        label = f"#{a['id']} {a['brand']} | {a['platform']} | {a['language']} | variant {a['variant']}"
-        with st.expander(("BLOCKED " if a["status"] == "blocked" else "") + label, expanded=True):
-            if a["compliance_reasons"]:
-                st.warning(a["compliance_reasons"])
-            if a["lessons_used"]:
-                st.caption(f"Generated with {a['lessons_used']} past lessons applied")
-            text = st.text_area("Content (edit before approving)", a["content"], key=f"t{a['id']}", height=150)
-            st.caption(f"Image idea: {a['image_idea']}")
+        # key=... stamps `st-key-jacard-<id>` on the container so CSS can style
+        # the card while real widgets stay inside it.
+        with st.container(key=f"jacard-{a['id']}"):
+            st.markdown(theme.card_head(
+                [f"#{a['id']}", a["brand"], a["platform"], a["language"],
+                 f"Variant {a['variant']}"], a["status"]), unsafe_allow_html=True)
+            st.markdown(theme.avatar_row(
+                a["brand"], BRANDS.get(a["brand"], {}).get("niche", ""),
+                a["platform"]), unsafe_allow_html=True)
+
+            rule_line, rule_ok, ai_line, ai_ok = compliance.split_reasons(a["compliance_reasons"])
+            st.markdown(theme.compliance_boxes(rule_line, ai_line, rule_ok, ai_ok),
+                        unsafe_allow_html=True)
+
+            notes = [l["note"] or l["tag"] for l in db.get_lessons(a["brand"], limit=3)]
+            st.markdown(theme.lessons_box(a["lessons_used"], notes), unsafe_allow_html=True)
+
+            text = st.text_area("Content (edit before approving)", a["content"],
+                                key=f"t{a['id']}", height=150)
+            with st.expander(f"Image idea · {a['platform']}"):
+                st.caption(a["image_idea"] or "None suggested")
+
             c1, c2, c3 = st.columns([1, 1, 2])
             tag = c3.selectbox("Reason tag", FEEDBACK_TAGS, key=f"g{a['id']}")
             note = c3.text_input("Note", key=f"n{a['id']}")
-            if c1.button("Approve", key=f"a{a['id']}", disabled=a["status"] == "blocked"):
+            if c1.button("Approve", key=f"a{a['id']}", type="primary",
+                         disabled=a["status"] == "blocked"):
                 edited = text.strip() != a["content"].strip()
                 db.review(a["id"], "approve", text, tag if edited else None, note)
                 st.rerun()
