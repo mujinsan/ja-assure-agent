@@ -133,17 +133,39 @@ def header(subtitle, mode_text, ok=True):
 """
 
 
+AMBER = "#FAC775"
+
+# state -> (colour, mark, suffix)
+STEP_STATE = {
+    "done":    (GREEN, "✓", ""),
+    "waiting": (ACCENT, "◷", ""),
+    "mock":    (AMBER, "!", " (mock)"),
+}
+
+
 def pipeline_steps(steps):
-    """steps: list of (label, done). Pill row for the run tracker."""
+    """steps: list of (label, state) where state is done | waiting | mock.
+
+    A mock step goes amber and says so: a green tick over mock output claims
+    work the model never did.
+    """
     out = []
-    for label, done in steps:
-        colour = GREEN if done else ACCENT
-        mark = "✓" if done else "◷"
+    for label, state in steps:
+        colour, mark, suffix = STEP_STATE.get(state, STEP_STATE["waiting"])
+        border = colour if state == "mock" else LINE
         out.append(
             f'<span style="padding:4px 10px;border-radius:999px;background:{PANEL};'
-            f'border:1px solid {LINE};color:{colour};">{mark} {_esc(label)}</span>')
+            f'border:1px solid {border};color:{colour};">'
+            f'{mark} {_esc(label)}{suffix}</span>')
     return ('<div style="display:flex;gap:6px;margin-top:14px;font-size:11px;'
             f'flex-wrap:wrap;">{"".join(out)}</div>')
+
+
+def mock_banner():
+    """Loud in-card warning that this asset is template text, not model output."""
+    return (f'<div style="margin-top:10px;border:1px solid {AMBER};border-radius:8px;'
+            f'padding:6px 10px;font-size:12px;color:{AMBER};background:#2a1c05;">'
+            f'! MOCK - do not approve</div>')
 
 
 def card_head(meta, status):

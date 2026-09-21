@@ -39,20 +39,31 @@ with gen:
     if st.button("Run pipeline", type="primary", disabled=not platforms):
         with st.spinner("Research -> content -> compliance..."):
             created, researched = pipeline.run(brand, platforms, language, topic, use_research)
-        if llm.last_error:
-            st.warning(f"Gemini call failed, showing mock output: {llm.last_error}")
-        blocked = sum(1 for *_, ok, _ in created if not ok)
+        # Derive from the providers actually recorded on the assets: last_summary
+        # only describes the final call, and a run makes several.
+        provs = {prov for *_, prov in created}
+        mocked = "mock" in provs
+        if mocked:
+            st.warning(llm.last_summary or "All providers failed - mock output")
+        elif "groq" in provs:
+            st.info(llm.last_summary or f"Gemini unavailable - answered by {llm.GROQ_MODEL}")
+        elif llm.last_summary:
+            st.info(llm.last_summary)
+        blocked = sum(1 for *_, ok, _, _ in created if not ok)
+        wrote_state = "mock" if mocked else ("done" if created else "waiting")
         st.markdown(theme.pipeline_steps([
-            ("Researched" if researched else "Research skipped", researched),
-            (f"Wrote {len(created)} variants", bool(created)),
-            ("Compliance checked", True),
-            (f"{len(created) - blocked} awaiting review", False),
+            ("Researched" if researched else "Research skipped",
+             "done" if researched else "waiting"),
+            (f"Wrote {len(created)} variants", wrote_state),
+            ("Compliance checked", wrote_state),
+            (f"{len(created) - blocked} awaiting review", "waiting"),
         ]), unsafe_allow_html=True)
-        for aid, p, v, ok, reasons in created:
+        for aid, p, v, ok, reasons, prov in created:
+            tail = " [MOCK]" if prov == "mock" else ""
             if ok:
-                st.write(f"#{aid} {p} variant {v}: passed compliance -> review")
+                st.write(f"#{aid} {p} variant {v}: passed compliance -> review{tail}")
             else:
-                st.error(f"#{aid} {p} variant {v}: BLOCKED - {'; '.join(reasons)}")
+                st.error(f"#{aid} {p} variant {v}: BLOCKED - {'; '.join(reasons)}{tail}")
 
 with rev:
     show_blocked = st.toggle("Also show compliance-blocked assets")
@@ -69,6 +80,9 @@ with rev:
             st.markdown(theme.avatar_row(
                 a["brand"], BRANDS.get(a["brand"], {}).get("niche", ""),
                 a["platform"]), unsafe_allow_html=True)
+
+            if a["provider"] == "mock":
+                st.markdown(theme.mock_banner(), unsafe_allow_html=True)
 
             rule_line, rule_ok, ai_line, ai_ok = compliance.split_reasons(a["compliance_reasons"])
             st.markdown(theme.compliance_boxes(rule_line, ai_line, rule_ok, ai_ok),

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS assets(
   status TEXT DEFAULT 'pending',          -- pending | blocked | approved | rejected | scheduled
   feedback_tag TEXT, feedback_note TEXT,
   lessons_used INTEGER DEFAULT 0,
+  provider TEXT,                          -- gemini | groq | mock: who wrote this asset
   reviewed_at TEXT, post_id TEXT
 );
 CREATE TABLE IF NOT EXISTS lessons(
@@ -37,6 +38,11 @@ def conn():
 def init():
     with conn() as c:
         c.executescript(SCHEMA)
+        # CREATE TABLE IF NOT EXISTS won't add columns to a table that already
+        # exists, so bring older databases forward by hand.
+        have = {r[1] for r in c.execute("PRAGMA table_info(assets)")}
+        if "provider" not in have:
+            c.execute("ALTER TABLE assets ADD COLUMN provider TEXT")
 
 def log(c, asset_id, action, actor, detail=""):
     c.execute("INSERT INTO audit_log(ts,asset_id,action,actor,detail) VALUES(?,?,?,?,?)",
@@ -46,11 +52,13 @@ def insert_asset(**a):
     with conn() as c:
         cur = c.execute(
             """INSERT INTO assets(created_at,brand,platform,language,topic,variant,content,
-               original_content,image_idea,compliance_pass,compliance_reasons,status,lessons_used)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               original_content,image_idea,compliance_pass,compliance_reasons,status,
+               lessons_used,provider)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (now(), a["brand"], a["platform"], a["language"], a["topic"], a["variant"],
              a["content"], a["content"], a.get("image_idea", ""), int(a["compliance_pass"]),
-             a["compliance_reasons"], a["status"], a.get("lessons_used", 0)))
+             a["compliance_reasons"], a["status"], a.get("lessons_used", 0),
+             a.get("provider")))
         log(c, cur.lastrowid, "created", "system", a["status"])
         return cur.lastrowid
 
