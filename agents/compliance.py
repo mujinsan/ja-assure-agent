@@ -20,6 +20,22 @@ def hard_reasons(text):
     """Deterministic regex layer. Always per-variant, never batched."""
     return [msg for pat, msg in HARD_RULES if re.search(pat, text, re.I)]
 
+def _summarise(hits, limit=52):
+    """One short line for a narrow grid cell: name the first hit, count the rest.
+
+    De-duplicates first: two rules can share a label (the guarantee rule and the
+    "ensure ... covered" rule both report "Guarantees an outcome"), and showing
+    the same phrase twice reads as a bug.
+    """
+    seen = []
+    for h in hits:
+        if h not in seen:
+            seen.append(h)
+    first = seen[0]
+    if len(first) > limit:
+        first = first[:limit - 1].rstrip() + "…"
+    return first if len(seen) == 1 else f"{first} +{len(seen) - 1} more"
+
 def split_reasons(reasons_text):
     """Split a stored compliance_reasons string into the two UI layers.
 
@@ -36,9 +52,10 @@ def split_reasons(reasons_text):
     rule_hits = [p for p in parts if not p.startswith("LLM:")]
     ai_hits = [p[4:].strip() for p in parts if p.startswith("LLM:")]
 
-    # TODO(human): turn rule_hits / ai_hits into the two display lines.
-    #   total rules available = len(HARD_RULES)
-    return ("", not rule_hits, "", not ai_hits)
+    total = len(HARD_RULES)
+    rule_line = _summarise(rule_hits) if rule_hits else f"{total} of {total} rules passed"
+    ai_line = _summarise(ai_hits) if ai_hits else "No issues flagged"
+    return (rule_line, not rule_hits, ai_line, not ai_hits)
 
 def check_batch(items):
     """items: list of (key, text). One LLM call for the whole run.
