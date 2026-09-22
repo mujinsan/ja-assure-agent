@@ -173,6 +173,13 @@ edit revises the existing post rather than creating a second one.
 
 Base `https://api.ayrshare.com/api`, key in `Authorization: Bearer`.
 
+**Linked account (as configured today):** Instagram `@elk.90128409` — the only
+platform linked on this Ayrshare profile. Verify with `GET /user` →
+`activeSocialAccounts` / `displayNames`; it is the source of truth, not this file.
+LinkedIn assets currently fail preflight with
+`linkedin is not linked in Ayrshare (linked: instagram)`, so link LinkedIn in the
+Ayrshare dashboard before expecting those to publish.
+
 - `GET /user` → `activeSocialAccounts`, used to check the platform is actually linked
 - Media upload is two-step per their docs: `GET /media/uploadUrl?fileName=&contentType=`
   returns `{uploadUrl, accessUrl}`, then `PUT` the bytes to `uploadUrl`; `accessUrl` goes
