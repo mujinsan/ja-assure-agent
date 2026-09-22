@@ -40,6 +40,8 @@ ships a binary.
 | `DB_PATH` | `ja_assure.db` | SQLite file |
 | `MEDIA_DIR` | `media` | Generated and uploaded media |
 | `OUTBOX_PATH` | `outbox.jsonl` | Dry-run publish log |
+| `MEDIA_FALLBACK_HOST` | `catbox.moe` | Label for strategy 2 |
+| `MEDIA_FALLBACK_URL` | `https://catbox.moe/user/api.php` | Strategy 2 upload endpoint |
 
 Never commit `.env`. It is gitignored and has never been tracked.
 
@@ -160,6 +162,31 @@ can report a platform as linked while posting still fails with
 `code 156: not linked` — in that case reconnect it on Ayrshare's Social Accounts
 page. Ayrshare also applies a circuit breaker after repeated identical errors,
 which needs a cooldown.
+
+### 403 Forbidden from /api/media/uploadUrl
+
+Ayrshare's media upload endpoint is not available on every plan. This is not
+fatal: `_public_media_url()` falls back to an anonymous public image host
+(catbox.moe by default) and passes that URL in `mediaUrls`. The terminal names
+which strategy ran:
+
+```
+[publisher] strategy 1 (Ayrshare media upload) not permitted: HTTP 403 ... - falling back to catbox.moe
+[publisher] media hosted via catbox.moe
+```
+
+If both fail, the asset is marked `failed` and the reason distinguishes
+`Ayrshare upload not permitted on this plan` from any other error. Setting
+`image_path` to a public `https` URL bypasses both strategies.
+
+Swap the host by editing `_anon_upload()` in `agents/publisher.py`, or point
+`MEDIA_FALLBACK_URL` / `MEDIA_FALLBACK_HOST` elsewhere if the replacement takes
+the same multipart shape.
+
+**Note:** media sent to the fallback host is publicly readable by anyone with
+the URL and is not covered by any data agreement. It is the same image that is
+about to be posted publicly, but it outlives the post — catbox keeps anonymous
+uploads until two years of inactivity.
 
 ### A post says "scheduled" but nothing appeared
 

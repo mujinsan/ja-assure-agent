@@ -56,6 +56,7 @@ auto-publish work.
 | `DB_PATH` | `ja_assure.db` | SQLite file |
 | `MEDIA_DIR` | `media` | Generated and uploaded media |
 | `OUTBOX_PATH` | `outbox.jsonl` | Dry-run publish log |
+| `MEDIA_FALLBACK_URL` | `https://catbox.moe/user/api.php` | Strategy 2 media host, used when Ayrshare's upload endpoint is not on your plan |
 
 `.env`, `*.db`, `outbox.jsonl` and `media/` are gitignored. Secrets live in env vars
 only and are never printed — keys travel in an `Authorization` header and nothing logs them.

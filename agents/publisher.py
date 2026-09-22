@@ -11,9 +11,17 @@ OUTBOX = os.getenv("OUTBOX_PATH", "outbox.jsonl")
 AYRSHARE_BASE = os.getenv("AYRSHARE_BASE", "https://api.ayrshare.com/api")
 AYRSHARE_URL = f"{AYRSHARE_BASE}/post"
 
+# Strategy 2 media host. Anonymous, no key; swap _anon_upload() to change it.
+FALLBACK_HOST = os.getenv("MEDIA_FALLBACK_HOST", "catbox.moe")
+FALLBACK_HOST_URL = os.getenv("MEDIA_FALLBACK_URL", "https://catbox.moe/user/api.php")
+
 
 class ValidationError(RuntimeError):
     """Ayrshare rejected the request itself. Retrying cannot help."""
+
+
+class MediaUploadBlocked(RuntimeError):
+    """Ayrshare's media endpoint refused us: plan, auth or payment (401/402/403)."""
 
 # Ayrshare's platform slugs differ from the labels used in config.PLATFORMS
 PLATFORM_SLUG = {"linkedin": "linkedin", "instagram": "instagram",
@@ -79,15 +87,20 @@ def preflight(asset):
     return None
 
 
-def _upload_media(path):
-    """Two-step upload: presigned URL, then PUT the bytes. Returns accessUrl."""
+def _ayrshare_upload(path):
+    """Strategy 1: Ayrshare's own two-step upload. Returns accessUrl.
+
+    Raises MediaUploadBlocked on 401/402/403 - those mean the endpoint is not
+    available to this key or plan, which a retry cannot fix but a different
+    host can.
+    """
     import mimetypes, requests
     ext = os.path.splitext(path)[1].lstrip(".").lower() or "png"
-    if path.startswith(("http://", "https://")):
-        return path
     r = requests.get(f"{AYRSHARE_BASE}/media/uploadUrl", headers=_headers(),
                      params={"fileName": os.path.basename(path), "contentType": ext},
                      timeout=30)
+    if r.status_code in (401, 402, 403):
+        raise MediaUploadBlocked(f"HTTP {r.status_code} from /media/uploadUrl")
     r.raise_for_status()
     info = r.json()
     upload_url, access_url = info.get("uploadUrl"), info.get("accessUrl")
@@ -97,8 +110,66 @@ def _upload_media(path):
     with open(path, "rb") as fh:
         put = requests.put(upload_url, data=fh.read(),
                            headers={"Content-Type": ctype}, timeout=120)
+    if put.status_code in (401, 402, 403):
+        raise MediaUploadBlocked(f"HTTP {put.status_code} uploading to the presigned URL")
     put.raise_for_status()
     return access_url
+
+
+def _anon_upload(path):
+    """Strategy 2: anonymous public image host. Returns a direct URL.
+
+    Swap this single function to change host. Current host is catbox.moe:
+    POST multipart to /user/api.php with reqtype=fileupload and fileToUpload,
+    which answers with the direct URL as plain text. No key, no account.
+    Anonymous uploads are kept until two years of inactivity.
+    """
+    import requests
+    with open(path, "rb") as fh:
+        r = requests.post(
+            FALLBACK_HOST_URL,
+            data={"reqtype": "fileupload"},
+            files={"fileToUpload": (os.path.basename(path), fh)},
+            # the CDN drops requests carrying the default python-requests agent
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ja-assure/1.0)"},
+            timeout=120)
+    r.raise_for_status()
+    url = (r.text or "").strip()
+    if not url.startswith("https://"):
+        raise RuntimeError(f"unexpected response from {FALLBACK_HOST}: {url[:120]!r}")
+    return url
+
+
+def _public_media_url(path):
+    """A publicly reachable URL for a local file. Returns (url, strategy).
+
+    Ayrshare needs a URL it can fetch, so a local path must be hosted somewhere
+    first. Strategy 1 is Ayrshare's own endpoint; strategy 2 is an anonymous
+    host, used when strategy 1 is unavailable rather than failing the post.
+    """
+    if path.startswith(("http://", "https://")):
+        return path, "already-public"
+
+    plan_blocked, first_error = False, None
+    try:
+        return _ayrshare_upload(path), "ayrshare"
+    except MediaUploadBlocked as e:
+        plan_blocked, first_error = True, e
+        print(f"[publisher] strategy 1 (Ayrshare media upload) not permitted: {e}"
+              f" - falling back to {FALLBACK_HOST}")
+    except Exception as e:
+        first_error = e
+        print(f"[publisher] strategy 1 (Ayrshare media upload) failed: {e}"
+              f" - falling back to {FALLBACK_HOST}")
+
+    try:
+        return _anon_upload(path), FALLBACK_HOST
+    except Exception as e2:
+        lead = ("Ayrshare upload not permitted on this plan"
+                if plan_blocked else f"Ayrshare media upload failed ({first_error})")
+        raise ValidationError(
+            f"{lead}; fallback host {FALLBACK_HOST} also failed ({e2}). "
+            f"Set image_path to a public https URL to bypass both.")
 
 
 def dry_run_mode():
@@ -185,7 +256,9 @@ def _body_for(asset):
     body = {"post": asset.get("content") or "", "platforms": [slug]}
     path, kind = latest_media(asset)
     if path:
-        body["mediaUrls"] = [_upload_media(path)]
+        url, strategy = _public_media_url(path)
+        print(f"[publisher] media hosted via {strategy}")
+        body["mediaUrls"] = [url]
         if kind == "video":
             body["isVideo"] = True
     elif slug == "instagram":
