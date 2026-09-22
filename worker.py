@@ -23,13 +23,18 @@ MAX_ATTEMPTS = 3
 
 
 def _publish_claimed(asset):
-    """Publish an already-claimed asset, retrying with backoff.
+    """Publish (or update) an already-claimed asset, retrying with backoff.
 
+    An asset that already carries a post_id is a post-publish edit, so it goes
+    through the adapter's update path instead of creating a second post.
     Returns (post_id, provider) or raises the last error after MAX_ATTEMPTS.
     """
+    existing = asset.get("post_id")
     last = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
+            if existing:
+                return publisher.update(asset, existing)
             return publisher.publish(asset)
         except Exception as e:
             last = e
@@ -40,10 +45,18 @@ def _publish_claimed(asset):
 
 
 def run_once():
-    """One pass over the approved queue. Returns a counts dict."""
-    counts = {"posted": 0, "failed": 0, "skipped_mock": 0, "lost_race": 0}
+    """One pass over the due approved queue. Returns a counts dict."""
+    counts = {"posted": 0, "updated": 0, "failed": 0,
+              "skipped_mock": 0, "lost_race": 0, "paused": 0}
 
-    for asset in db.list_assets("approved"):
+    # global kill switch, stored in the DB so every worker and session sees it
+    if db.publishing_paused():
+        counts["paused"] = 1
+        return counts
+
+    # only assets whose publish_at has arrived; never anything but 'approved',
+    # which is the human sign-off gate
+    for asset in db.due_approved():
         # never publish template text, even if it somehow reached approved
         if asset.get("provider") == "mock":
             counts["skipped_mock"] += 1
@@ -65,10 +78,47 @@ def run_once():
             raise
         else:
             db.mark_scheduled(asset["id"], post_id, provider)
-            counts["posted"] += 1
-            print(f"[worker] #{asset['id']} -> {provider} {post_id}")
+            key = "updated" if asset.get("post_id") else "posted"
+            counts[key] += 1
+            print(f"[worker] #{asset['id']} {key} -> {provider} {post_id}")
 
     return counts
+
+
+_bg_started = False
+_bg_lock = None
+
+
+def start_background(interval=None):
+    """Start one daemon publisher thread for this process. Idempotent.
+
+    Streamlit reruns the script constantly, so this is guarded and meant to be
+    wrapped in st.cache_resource by the caller.
+    """
+    global _bg_started, _bg_lock
+    import threading
+    if _bg_lock is None:
+        _bg_lock = threading.Lock()
+    with _bg_lock:
+        if _bg_started:
+            return False
+        _bg_started = True
+
+    every = interval or POLL_SECONDS
+
+    def loop():
+        while True:
+            try:
+                counts = run_once()
+                if any(v for k, v in counts.items() if k != "paused"):
+                    print(f"[worker:bg] {counts}")
+            except Exception as e:                  # never kill the thread
+                print(f"[worker:bg] pass failed: {e}")
+            time.sleep(every)
+
+    threading.Thread(target=loop, name="ja-publisher", daemon=True).start()
+    print(f"[worker:bg] auto-publish thread started, every {every}s")
+    return True
 
 
 def main(argv=None):
@@ -79,7 +129,8 @@ def main(argv=None):
     db.init()
     mode = publisher.active_provider()
     print(f"[worker] provider={mode} poll={POLL_SECONDS}s"
-          + (" (dry-run: writes outbox.jsonl)" if mode == "dry-run" else ""))
+          + (" (dry-run: writes outbox.jsonl)" if mode == "dry-run" else "")
+          + (" [PUBLISHING PAUSED]" if db.publishing_paused() else ""))
 
     if args.once:
         print(f"[worker] {run_once()}")

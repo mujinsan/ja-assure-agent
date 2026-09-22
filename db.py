@@ -16,12 +16,24 @@ CREATE TABLE IF NOT EXISTS assets(
   provider TEXT,                          -- gemini | groq | mock: who wrote this asset
   post_provider TEXT,                     -- dry-run | ayrshare: who published it
   post_error TEXT,                        -- why the last publish attempt failed
+  publish_at TEXT,                        -- ISO time the worker may publish from
+  image_path TEXT, video_path TEXT,       -- current media, versioned below
+  needs_rereview INTEGER DEFAULT 0,       -- edited after approval
   reviewed_at TEXT, post_id TEXT
 );
 CREATE TABLE IF NOT EXISTS lessons(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT, brand TEXT, platform TEXT, tag TEXT, note TEXT,
   bad_example TEXT, fixed_example TEXT
+);
+CREATE TABLE IF NOT EXISTS asset_versions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id INTEGER, version INTEGER,
+  caption TEXT, image_path TEXT, video_path TEXT,
+  edited_by TEXT, ts TEXT
+);
+CREATE TABLE IF NOT EXISTS settings(
+  key TEXT PRIMARY KEY, value TEXT
 );
 CREATE TABLE IF NOT EXISTS audit_log(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,7 +46,7 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 def conn():
-    c = sqlite3.connect(DB_PATH)
+    c = sqlite3.connect(DB_PATH, timeout=10)
     c.row_factory = sqlite3.Row
     return c
 
@@ -55,6 +67,11 @@ def init():
             c.execute("ALTER TABLE assets ADD COLUMN post_provider TEXT")
         if "post_error" not in have:
             c.execute("ALTER TABLE assets ADD COLUMN post_error TEXT")
+        for col, decl in (("publish_at", "TEXT"), ("image_path", "TEXT"),
+                          ("video_path", "TEXT"),
+                          ("needs_rereview", "INTEGER DEFAULT 0")):
+            if col not in have:
+                c.execute(f"ALTER TABLE assets ADD COLUMN {col} {decl}")
         have_audit = {r[1] for r in c.execute("PRAGMA table_info(audit_log)")}
         if "prev_hash" not in have_audit:
             c.execute("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT")
@@ -105,8 +122,13 @@ def list_assets(status=None):
                 "SELECT * FROM assets WHERE status=? ORDER BY id DESC", (status,))]
         return [dict(r) for r in c.execute("SELECT * FROM assets ORDER BY id DESC")]
 
-def review(asset_id, action, content, tag=None, note="", actor="reviewer"):
-    """action: approve | reject. Edits and rejections become lessons."""
+def review(asset_id, action, content, tag=None, note="", actor="reviewer",
+           publish_at=None):
+    """action: approve | reject. Edits and rejections become lessons.
+
+    Approving stamps publish_at (default now) so the worker can pick the asset
+    up, and clears the needs_rereview flag: a human has just looked at it.
+    """
     with conn() as c:
         row = dict(c.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone())
         edited = content.strip() != row["content"].strip()
@@ -114,6 +136,9 @@ def review(asset_id, action, content, tag=None, note="", actor="reviewer"):
         c.execute("""UPDATE assets SET status=?, content=?, feedback_tag=?, feedback_note=?,
                      reviewed_at=? WHERE id=?""",
                   (status, content, tag, note, now(), asset_id))
+        if action == "approve":
+            c.execute("UPDATE assets SET publish_at=?, needs_rereview=0 WHERE id=?",
+                      (publish_at or now(), asset_id))
         log(c, asset_id, status + (" (edited)" if edited else ""), actor, tag or "")
         if action == "reject" or edited:
             c.execute("""INSERT INTO lessons(created_at,brand,platform,tag,note,bad_example,fixed_example)
@@ -206,3 +231,87 @@ def release_asset(asset_id, actor="worker"):
             (asset_id,))
         if cur.rowcount == 1:
             log(c, asset_id, "released", actor, "posting -> approved")
+
+
+# --- global settings ---------------------------------------------------------
+
+def get_setting(key, default=None):
+    with conn() as c:
+        r = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return r["value"] if r else default
+
+
+def set_setting(key, value, actor="human"):
+    with conn() as c:
+        c.execute("INSERT INTO settings(key,value) VALUES(?,?) "
+                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (key, str(value)))
+        log(c, None, f"setting {key}", actor, str(value))
+
+
+def publishing_paused():
+    return get_setting("publishing_paused", "0") == "1"
+
+
+def set_publishing_paused(paused, actor="human"):
+    set_setting("publishing_paused", "1" if paused else "0", actor)
+
+
+# --- scheduling --------------------------------------------------------------
+
+def set_publish_at(asset_id, when_iso, actor="human"):
+    with conn() as c:
+        c.execute("UPDATE assets SET publish_at=? WHERE id=?", (when_iso, asset_id))
+        log(c, asset_id, "scheduled for", actor, when_iso or "now")
+
+
+def due_approved(now_iso=None):
+    """Approved assets whose publish_at has arrived (or was never set)."""
+    now_iso = now_iso or now()
+    with conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM assets WHERE status='approved' "
+            "AND (publish_at IS NULL OR publish_at <= ?) ORDER BY id ASC", (now_iso,))]
+
+
+# --- versioned editing -------------------------------------------------------
+
+def add_version(asset_id, caption, image_path=None, video_path=None,
+                edited_by="human", c=None):
+    """Append a version row. Pass an open connection to join a transaction."""
+    def _do(cx):
+        r = cx.execute("SELECT MAX(version) v FROM asset_versions WHERE asset_id=?",
+                       (asset_id,)).fetchone()
+        nxt = (r["v"] or 0) + 1
+        cx.execute("""INSERT INTO asset_versions(asset_id,version,caption,image_path,
+                      video_path,edited_by,ts) VALUES(?,?,?,?,?,?,?)""",
+                   (asset_id, nxt, caption, image_path, video_path, edited_by, now()))
+        return nxt
+    if c is not None:
+        return _do(c)
+    with conn() as cx:
+        return _do(cx)
+
+
+def list_versions(asset_id):
+    with conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM asset_versions WHERE asset_id=? ORDER BY version DESC",
+            (asset_id,))]
+
+
+def apply_version(asset_id, caption, image_path, video_path, new_status,
+                  compliance_pass, compliance_reasons, needs_rereview,
+                  edited_by="human"):
+    """Write an edit: new version row, updated asset, audit entry - one transaction."""
+    with conn() as c:
+        version = add_version(asset_id, caption, image_path, video_path, edited_by, c=c)
+        c.execute("""UPDATE assets SET content=?, image_path=?, video_path=?,
+                     status=?, compliance_pass=?, compliance_reasons=?,
+                     needs_rereview=? WHERE id=?""",
+                  (caption, image_path, video_path, new_status,
+                   int(compliance_pass), compliance_reasons,
+                   1 if needs_rereview else 0, asset_id))
+        log(c, asset_id, f"edited v{version}", edited_by,
+            f"status -> {new_status}" + (" (needs re-review)" if needs_rereview else ""))
+        return version

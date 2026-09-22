@@ -4,6 +4,9 @@ Every rule is evaluated against the asset; the winner is chosen by PRIORITY,
 not by which rule happens to be written first.
 """
 import re
+
+import db
+from agents import compliance
 from config import PLATFORMS
 
 # Most specific / most serious first.
@@ -86,3 +89,34 @@ def suggest_tag(asset):
         if tag in hits:
             return tag
     return None
+
+
+# Statuses where an edit means the human sign-off no longer covers the content,
+# so it has to go back through review before it can publish again.
+POST_APPROVAL = {"approved", "posting", "scheduled", "failed"}
+
+
+def apply_edit(asset, caption, image_path=None, video_path=None, edited_by="human"):
+    """Record an edit as a new version, re-running compliance when needed.
+
+    Editing an asset that a human already approved (or that is already live)
+    sends it back to pending/blocked: the earlier approval was for different
+    copy. Returns (version, new_status, reasons, needs_rereview).
+    """
+    caption = (caption or "").strip()
+    was_signed_off = asset.get("status") in POST_APPROVAL
+
+    if was_signed_off:
+        # both layers again: regex rules and the LLM rubric
+        ok, reasons = compliance.check(caption)
+        new_status = "pending" if ok else "blocked"
+        needs_rereview = True
+    else:
+        ok, reasons = compliance.check(caption)
+        new_status = asset.get("status") if ok else "blocked"
+        needs_rereview = False
+
+    version = db.apply_version(
+        asset["id"], caption, image_path, video_path, new_status,
+        ok, "; ".join(reasons), needs_rereview, edited_by)
+    return version, new_status, reasons, needs_rereview

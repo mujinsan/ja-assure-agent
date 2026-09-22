@@ -1,3 +1,4 @@
+import datetime as _dt
 import difflib
 import altair as alt
 import pandas as pd
@@ -38,6 +39,16 @@ with _rp:
 if bg_on:
     vanta.render()
     st.markdown(theme.main_overlay(), unsafe_allow_html=True)
+
+
+@st.cache_resource
+def _autopublisher():
+    """One daemon thread per server process, publishing due approved assets."""
+    worker.start_background()
+    return True
+
+
+_autopublisher()
 # ---------------------------------------------------------------------------
 
 if not live():
@@ -131,8 +142,38 @@ with rev:
             if hits:
                 st.markdown(theme.highlight(a["content"], hits), unsafe_allow_html=True)
 
-            text = st.text_area("Content (edit before approving)", a["content"],
+            if a["needs_rereview"]:
+                st.markdown(theme.rereview_banner(), unsafe_allow_html=True)
+
+            text = st.text_area("Caption (edit before approving)", a["content"],
                                 key=f"t{a['id']}", height=150)
+            m1, m2 = st.columns(2)
+            img = m1.text_input("Image path", a["image_path"] or "", key=f"i{a['id']}")
+            vid = m2.text_input("Video path", a["video_path"] or "", key=f"v{a['id']}")
+
+            e1, e2 = st.columns([1, 3])
+            if e1.button("Save edit", key=f"e{a['id']}"):
+                with st.spinner("Re-running compliance..."):
+                    ver, new_status, reasons, needs = review.apply_edit(
+                        a, text, img or None, vid or None, edited_by="human")
+                msg = f"Saved v{ver} → {new_status}"
+                (st.warning if needs or new_status == "blocked" else st.success)(
+                    msg + (f" · {'; '.join(reasons)}" if reasons else ""))
+                st.rerun()
+
+            versions = db.list_versions(a["id"])
+            if versions:
+                labels = [f"v{v['version']} · {v['ts']} · {v['edited_by']}"
+                          for v in versions]
+                pick = e2.selectbox("Version history", labels, index=0,
+                                    key=f"vh{a['id']}")
+                chosen = versions[labels.index(pick)]
+                with st.expander(f"Show v{chosen['version']}"):
+                    st.caption(f"image: {chosen['image_path'] or '-'} · "
+                               f"video: {chosen['video_path'] or '-'}")
+                    st.markdown(theme.post_body(chosen["caption"] or ""),
+                                unsafe_allow_html=True)
+
             with st.expander(f"Image idea · {a['platform']}"):
                 st.caption(a["image_idea"] or "None suggested")
 
@@ -147,12 +188,21 @@ with rev:
             if suggested:
                 c3.caption(f"(suggested) {suggested}")
             note = c3.text_input("Note", key=f"n{a['id']}")
+            later = c3.checkbox("Schedule for later", key=f"sl{a['id']}")
+            publish_at = None
+            if later:
+                d = c3.date_input("Date", key=f"sd{a['id']}")
+                t = c3.time_input("Time (UTC)", key=f"stm{a['id']}")
+                publish_at = _dt.datetime.combine(d, t).replace(
+                    tzinfo=_dt.timezone.utc).isoformat(timespec="seconds")
+
             # Mock assets are template text, not model output: never approvable.
             if c1.button("Approve", key=f"a{a['id']}", type="primary",
                          disabled=a["status"] == "blocked" or is_mock,
                          help="Mock output cannot be approved" if is_mock else None):
                 edited = text.strip() != a["content"].strip()
-                db.review(a["id"], "approve", text, tag if edited else None, note)
+                db.review(a["id"], "approve", text, tag if edited else None, note,
+                          publish_at=publish_at)
                 st.rerun()
             if c2.button("Reject", key=f"r{a['id']}"):
                 if not tag:
@@ -175,10 +225,18 @@ with queue:
             "status='scheduled' and writes back a post_id.</div>",
             unsafe_allow_html=True)
 
-        pcol, bcol = st.columns([3, 1])
+        pcol, tcol, bcol = st.columns([2, 1, 1])
         with pcol:
             st.markdown(theme.provider_pill(publisher.active_provider()),
                         unsafe_allow_html=True)
+            if db.publishing_paused():
+                st.markdown(theme.paused_pill(), unsafe_allow_html=True)
+        with tcol:
+            paused = st.toggle("Publishing paused", value=db.publishing_paused(),
+                               key="pause-toggle")
+            if paused != db.publishing_paused():
+                db.set_publishing_paused(paused)
+                st.rerun()
         with bcol:
             if st.button("Run worker once", key="worker-once",
                          use_container_width=True):

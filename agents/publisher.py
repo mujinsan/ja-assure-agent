@@ -31,7 +31,15 @@ def publish(asset):
     return _dry_run(asset), provider
 
 
-def _dry_run(asset):
+def update(asset, post_id):
+    """Push an edit to an already-published post. Returns (post_id, provider)."""
+    provider = active_provider()
+    if provider == "ayrshare":
+        return _ayrshare_update(asset, post_id), provider
+    return _dry_run(asset, event="update", post_id=post_id), provider
+
+
+def _dry_run(asset, event="post", post_id=None):
     """Append the post to outbox.jsonl and hand back a fake id."""
     record = {
         "brand": asset.get("brand"),
@@ -39,10 +47,18 @@ def _dry_run(asset):
         "language": asset.get("language"),
         "content": asset.get("content"),
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "event": event,
     }
+    if asset.get("image_path"):
+        record["image_path"] = asset["image_path"]
+    if asset.get("video_path"):
+        record["video_path"] = asset["video_path"]
+    if post_id:
+        record["post_id"] = post_id
     with open(OUTBOX, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return f"dry-{uuid.uuid4().hex[:8]}"
+    # an update keeps the id of the post it is updating
+    return post_id or f"dry-{uuid.uuid4().hex[:8]}"
 
 
 def _ayrshare(asset):
@@ -74,3 +90,21 @@ def _ayrshare(asset):
     if not post_id:
         raise RuntimeError(f"ayrshare returned no post id: {str(data)[:200]}")
     return post_id
+
+
+def _ayrshare_update(asset, post_id):
+    """Ayrshare edit endpoint. Untested against the live API - no key here."""
+    import requests
+    key = os.getenv("AYRSHARE_API_KEY")
+    if not key:
+        raise RuntimeError("AYRSHARE_API_KEY not set")
+    r = requests.put(
+        AYRSHARE_URL,
+        headers={"Authorization": f"Bearer {key}"},
+        json={"id": post_id, "post": asset.get("content") or ""},
+        timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    if str(data.get("status", "")).lower() in ("error", "fail", "failed"):
+        raise RuntimeError(f"ayrshare rejected the update: {str(data)[:200]}")
+    return data.get("id") or post_id

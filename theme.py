@@ -560,3 +560,16 @@ def provider_pill(provider):
     return (f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;'
             f'background:#10301f;border:1px solid #1b4d31;color:{GREEN};">'
             f'Live · {_esc(provider)}</span>')
+
+
+def rereview_banner():
+    """Edited after a human approved it: the sign-off no longer covers the copy."""
+    return (f'<div style="margin-top:10px;border:1px solid {AMBER};border-radius:8px;'
+            f'padding:6px 10px;font-size:12px;color:{AMBER};background:#2a1c05;">'
+            f'↺ Edited after approval — needs re-review</div>')
+
+
+def paused_pill():
+    return (f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;'
+            f'background:#3d1414;border:1px solid {RED};color:#F5A3A3;">'
+            f'Publishing paused</span>')
