@@ -1,11 +1,14 @@
-"""Vanta TOPOLOGY background, rendered inside a components.v1.html iframe.
+"""Vanta TOPOLOGY background, rendered inside an st.iframe.
 
 TOPOLOGY is the one Vanta effect built on p5.js rather than three.js, so p5
 must load first. The iframe is decorative only: theme.py pins it behind the app
 with pointer-events:none, so if either script 404s the page simply keeps the
 plain dark theme.
+
+The markup below is a fixed literal with nothing interpolated from users, the
+database or model output, which is what st.iframe requires of an HTML src.
 """
-import streamlit.components.v1 as components
+import streamlit as st
 
 P5 = "https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.1.9/p5.min.js"
 TOPOLOGY = "https://cdnjs.cloudflare.com/ajax/libs/vanta/0.5.24/vanta.topology.min.js"
@@ -46,8 +49,12 @@ _HTML = """
 
 
 def render(height=400):
-    """Mount the background. CSS overrides the iframe box to fill the viewport."""
-    components.html(
+    """Mount the background. CSS overrides the iframe box to fill the viewport.
+
+    Uses st.iframe: st.components.v1.html is deprecated and was slated for
+    removal after 2026-06-01.
+    """
+    st.iframe(
         _HTML % {"p5": P5, "topo": TOPOLOGY, "bg": BG,
                  "line": hex(LINE), "bgint": hex(int(BG[1:], 16))},
-        height=height, scrolling=False)
+        height=height)
