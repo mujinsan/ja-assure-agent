@@ -33,8 +33,54 @@ STATUS = {
     "scheduled": ("#12243a", "#a8c8f0", "Scheduled"),
 }
 
+RED = "#F5534E"          # reserved: compliance and security signals only
+SERIF = "'Instrument Serif', Georgia, 'Times New Roman', serif"
+
 CSS = f"""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap');
+
+/* ---- editorial serif: display only, never body/labels/buttons ---- */
+.ja-title, .stApp h1, .stApp h2, .stApp h3,
+[data-testid="stMetricValue"] {{
+  font-family:{SERIF}; font-weight:400; letter-spacing:.2px;
+}}
+.stApp h2, .stApp h3 {{ color:{HEAD}; }}
+[data-testid="stMetricValue"] {{ font-size:2rem !important; }}
+/* metric labels stay sans */
+[data-testid="stMetricLabel"] {{ font-family:inherit; }}
+
+/* ---- BLOCKED rubber stamp ---- */
+.ja-stamp {{
+  position:absolute; top:12px; right:18px; z-index:5; pointer-events:none;
+  font-family:{SERIF}; font-size:20px; font-weight:700; letter-spacing:3px;
+  color:{RED}; border:2.5px solid {RED}; border-radius:5px;
+  padding:1px 12px 3px; opacity:.82;
+  /* uneven ink: two soft blotches so the fill isn't flat */
+  background:
+    radial-gradient(ellipse at 22% 34%, rgba(245,83,78,.13) 0 34%, transparent 36%),
+    radial-gradient(ellipse at 74% 66%, rgba(245,83,78,.09) 0 28%, transparent 30%);
+  transform:rotate(-8deg);
+  animation:ja-stamp-in 350ms cubic-bezier(.2,1.45,.35,1) both;
+}}
+@keyframes ja-stamp-in {{
+  0%   {{ transform:rotate(-8deg) scale(1.6); opacity:0; }}
+  55%  {{ transform:rotate(-8deg) scale(.93); opacity:.95; }}
+  78%  {{ transform:rotate(-8deg) scale(1.05); opacity:.74; }}
+  100% {{ transform:rotate(-8deg) scale(1); opacity:.82; }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+  .ja-stamp {{ animation:none; transform:rotate(-8deg) scale(1); opacity:.82; }}
+}}
+
+/* ---- offending phrase: red wavy underline, rule name on hover ---- */
+.ja-hit {{
+  text-decoration:underline wavy {RED};
+  text-decoration-thickness:1.5px;
+  text-underline-offset:3px;
+  cursor:help;
+}}
+
 .stApp {{ background:{BG}; }}
 [data-testid="stHeader"] {{ background:transparent; }}
 .block-container {{ padding-top:2.2rem; max-width:1100px; }}
@@ -56,6 +102,7 @@ CSS = f"""
 [class*="st-key-jacard-"] {{
   background:{PANEL}; border:1px solid {LINE}; border-radius:12px;
   padding:14px 16px; margin-bottom:14px;
+  position:relative;   /* anchors the BLOCKED stamp */
 }}
 
 /* ---- text area: flat inset, silver focus ring ---- */
@@ -122,7 +169,7 @@ def header(subtitle, mode_text, ok=True):
     return f"""
 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
   <div>
-    <div style="font-size:22px;font-weight:500;color:{HEAD};">JA Assure · AI marketing agent</div>
+    <div class="ja-title" style="font-size:38px;line-height:1.15;color:{HEAD};">JA Assure · AI marketing agent</div>
     <div style="font-size:12px;color:{MUTED};margin-top:2px;">{_esc(subtitle)}</div>
   </div>
   <div style="font-size:11px;padding:4px 10px;border-radius:999px;border:1px solid {BTN_LINE};
@@ -168,11 +215,15 @@ def mock_banner():
             f'! MOCK - do not approve</div>')
 
 
-def card_head(meta, status):
-    """Meta chips on the left, status badge on the right."""
+def card_head(meta, status, revised=False):
+    """Meta chips on the left, optional Revised badge, status badge on the right."""
     chips = "".join(
         f'<span style="padding:2px 8px;border:1px solid {CHIP_LINE};border-radius:6px;">'
         f'{_esc(m)}</span>' for m in meta)
+    if revised:
+        # silver outline, deliberately quieter than the status pill
+        chips += (f'<span style="padding:2px 8px;border:1px solid {SILVER_LINE};'
+                  f'border-radius:6px;color:{ACCENT};">Revised ✓</span>')
     bg, fg, label = STATUS.get(status, ("#2b2b33", BODY, status))
     return f"""
 <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -181,6 +232,28 @@ def card_head(meta, status):
     {_esc(label)}</span>
 </div>
 """
+
+
+def blocked_stamp():
+    """Rotated rubber stamp, positioned against the card container."""
+    return '<div class="ja-stamp">BLOCKED</div>'
+
+
+def highlight(text, spans):
+    """Post text with rule-layer hits wavy-underlined and titled.
+
+    spans: [(start, end, rule_name)] from compliance.hard_matches(), which
+    guarantees they are sorted and non-overlapping.
+    """
+    out, cursor = [], 0
+    for start, end, rule in spans:
+        out.append(_esc(text[cursor:start]))
+        out.append(f'<span class="ja-hit" title="{_esc(rule)}">'
+                   f'{_esc(text[start:end])}</span>')
+        cursor = end
+    out.append(_esc(text[cursor:]))
+    return (f'<div style="font-size:13px;line-height:1.7;color:{BODY};margin-top:10px;'
+            f'white-space:pre-wrap;">{"".join(out)}</div>')
 
 
 def avatar_row(brand, niche, platform):

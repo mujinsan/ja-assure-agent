@@ -20,6 +20,24 @@ def hard_reasons(text):
     """Deterministic regex layer. Always per-variant, never batched."""
     return [msg for pat, msg in HARD_RULES if re.search(pat, text, re.I)]
 
+def hard_matches(text):
+    """Where each rule fired: [(start, end, rule_name)], non-overlapping.
+
+    Display only - lets the UI underline the exact offending phrase. Overlaps
+    are dropped (the guarantee and "ensure ... covered" rules can cover the
+    same span) so the spans can be spliced into HTML in one pass.
+    """
+    spans = []
+    for pat, msg in HARD_RULES:
+        for m in re.finditer(pat, text or "", re.I):
+            spans.append((m.start(), m.end(), msg))
+    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    out = []
+    for start, end, msg in spans:
+        if not out or start >= out[-1][1]:
+            out.append((start, end, msg))
+    return out
+
 def _summarise(hits, limit=52):
     """One short line for a narrow grid cell: name the first hit, count the rest.
 

@@ -1,7 +1,7 @@
 import difflib
 import pandas as pd
 import streamlit as st
-import db, pipeline, theme
+import db, pipeline, review, theme
 from agents import llm, compliance
 from agents.llm import live, MODEL
 from config import BRANDS, PLATFORMS, LANGUAGES, FEEDBACK_TAGS
@@ -27,7 +27,7 @@ st.markdown(
                  ok=live() and not llm.last_error),
     unsafe_allow_html=True)
 
-gen, rev, queue, insights = st.tabs(["Generate", "Review", "Approved queue", "Learning & audit"])
+gen, rev, queue, insights = st.tabs(["Generate", "Review", "Approved queue", "Learning & Audit"])
 
 with gen:
     c1, c2 = st.columns(2)
@@ -74,14 +74,18 @@ with rev:
         # key=... stamps `st-key-jacard-<id>` on the container so CSS can style
         # the card while real widgets stay inside it.
         with st.container(key=f"jacard-{a['id']}"):
+            if a["status"] == "blocked":
+                st.markdown(theme.blocked_stamp(), unsafe_allow_html=True)
             st.markdown(theme.card_head(
                 [f"#{a['id']}", a["brand"], a["platform"], a["language"],
-                 f"Variant {a['variant']}"], a["status"]), unsafe_allow_html=True)
+                 f"Variant {a['variant']}"], a["status"],
+                revised=bool(a["lessons_used"])), unsafe_allow_html=True)
             st.markdown(theme.avatar_row(
                 a["brand"], BRANDS.get(a["brand"], {}).get("niche", ""),
                 a["platform"]), unsafe_allow_html=True)
 
-            if a["provider"] == "mock":
+            is_mock = a["provider"] == "mock"
+            if is_mock:
                 st.markdown(theme.mock_banner(), unsafe_allow_html=True)
 
             rule_line, rule_ok, ai_line, ai_ok = compliance.split_reasons(a["compliance_reasons"])
@@ -91,22 +95,41 @@ with rev:
             notes = [l["note"] or l["tag"] for l in db.get_lessons(a["brand"], limit=3)]
             st.markdown(theme.lessons_box(a["lessons_used"], notes), unsafe_allow_html=True)
 
+            # A textarea can't carry underlines or tooltips, so blocked assets
+            # get a read-only marked-up preview above the editable field.
+            hits = compliance.hard_matches(a["content"]) if a["status"] == "blocked" else []
+            if hits:
+                st.markdown(theme.highlight(a["content"], hits), unsafe_allow_html=True)
+
             text = st.text_area("Content (edit before approving)", a["content"],
                                 key=f"t{a['id']}", height=150)
             with st.expander(f"Image idea · {a['platform']}"):
                 st.caption(a["image_idea"] or "None suggested")
 
             c1, c2, c3 = st.columns([1, 1, 2])
-            tag = c3.selectbox("Reason tag", FEEDBACK_TAGS, key=f"g{a['id']}")
+            # Heuristic suggestion, no LLM. index=None leaves it genuinely empty
+            # rather than silently defaulting to the first tag in the list.
+            suggested = review.suggest_tag(a)
+            tag = c3.selectbox(
+                "Reason tag", FEEDBACK_TAGS,
+                index=FEEDBACK_TAGS.index(suggested) if suggested in FEEDBACK_TAGS else None,
+                placeholder="Choose a reason", key=f"g{a['id']}")
+            if suggested:
+                c3.caption(f"(suggested) {suggested}")
             note = c3.text_input("Note", key=f"n{a['id']}")
+            # Mock assets are template text, not model output: never approvable.
             if c1.button("Approve", key=f"a{a['id']}", type="primary",
-                         disabled=a["status"] == "blocked"):
+                         disabled=a["status"] == "blocked" or is_mock,
+                         help="Mock output cannot be approved" if is_mock else None):
                 edited = text.strip() != a["content"].strip()
                 db.review(a["id"], "approve", text, tag if edited else None, note)
                 st.rerun()
             if c2.button("Reject", key=f"r{a['id']}"):
-                db.review(a["id"], "reject", text, tag, note)
-                st.rerun()
+                if not tag:
+                    st.warning("Pick a reason tag before rejecting.")
+                else:
+                    db.review(a["id"], "reject", text, tag, note)
+                    st.rerun()
 
 with queue:
     st.caption("Project 2 contract: a worker polls status='approved', posts, sets status='scheduled' + post_id.")
@@ -130,16 +153,16 @@ with insights:
         trend = df.groupby("batch")[["rejected", "edit_amount"]].mean()
         m1, m2, m3 = st.columns(3)
         m1.metric("Reviewed", len(df))
-        m2.metric("Rejection rate", f"{df['rejected'].mean():.0%}")
-        m3.metric("Lessons stored", len(db.all_lessons()))
-        st.subheader("Is it improving? (per batch of 4 reviews)")
+        m2.metric("Rejection Rate", f"{df['rejected'].mean():.0%}")
+        m3.metric("Lessons Stored", len(db.all_lessons()))
+        st.subheader("Is It Improving? (Per Batch Of 4 Reviews)")
         st.line_chart(trend)
     else:
-        st.info("Review some assets to see the learning curve.")
-    st.subheader("Lessons learned memory")
+        st.info("Review Some Assets To See The Learning Curve.")
+    st.subheader("Lessons Learned Memory")
     ls = db.all_lessons()
     if ls:
         st.dataframe(pd.DataFrame(ls)[["id", "brand", "platform", "tag", "note", "bad_example"]],
                      use_container_width=True)
-    st.subheader("Audit log")
+    st.subheader("Audit Log")
     st.dataframe(pd.DataFrame(db.audit()), use_container_width=True)
