@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 outbox.jsonl
 media/
+*.zip
+.pytest_cache/

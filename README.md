@@ -6,6 +6,16 @@ with a closed feedback loop — every rejection or edit becomes a "lesson" injec
 Nothing reaches a social account without a human approving it, and nothing reaches a
 *real* account without a human also arming a separate live switch.
 
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Flow diagram, ER diagram, status lifecycle |
+| [docs/CODE_WALKTHROUGH.md](docs/CODE_WALKTHROUGH.md) | Every module and key function; one asset traced end to end |
+| [docs/SECURITY.md](docs/SECURITY.md) | Threat model, mitigations, and what is **not** protected |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Setup, env vars, troubleshooting, deployment notes |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Not built yet, and what production needs |
+
 ## Quick start
 
 ```bash
@@ -23,6 +33,7 @@ python worker.py            # posting worker, polls every POLL_SECONDS
 python worker.py --once     # one pass, then exit
 python scripts/check_gemini.py   # verify the Gemini key and model chain
 python scripts/check_groq.py     # verify the Groq fallback
+python -m pytest tests -q        # test suite: no network, temp database
 ```
 
 The app also starts one in-process publisher thread (`worker.start_background()`
@@ -221,9 +232,21 @@ No network, no keys, safe for demos.
 - **Test with publishing forced off.** Set `AYRSHARE_API_KEY=` in the test environment;
   `.env` is loaded automatically and an armed switch plus a key means tests post for real.
 
+## Tests
+
+```bash
+python -m pytest tests -q
+```
+
+59 tests covering the compliance hard rules, reason-tag heuristics, the
+re-review rule, the audit hash chain (including tamper detection) and upload
+type validation. Every test uses a temporary database and makes no network
+calls — `conftest.py` unsets `AYRSHARE_API_KEY` and stubs the LLM rubric layer,
+so a test run can never publish.
+
 ## Security
 
-Secrets in env vars only, never printed or committed. Scraped web content is sanitised and
+Full threat model in [docs/SECURITY.md](docs/SECURITY.md). In short: secrets in env vars only, never printed or committed. Scraped web content is sanitised and
 fenced as untrusted data before it reaches a model. Uploads are type-checked from their
 header bytes and stripped of metadata. Model output is HTML-escaped before rendering, since
 it lands in `unsafe_allow_html` markup. Every create, approve, reject, edit and publish is
