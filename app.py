@@ -151,17 +151,30 @@ with rev:
 
             text = st.text_area("Caption (edit before approving)", a["content"],
                                 key=f"t{a['id']}", height=150)
+            # A text_input honours value= only on first render, so the key is
+            # scoped to the media revision: a new version yields a new widget
+            # that re-reads the row. Writing session_state instead is refused
+            # once the widget has been instantiated this run.
+            mrev = len(db.list_versions(a["id"]))
+            next_ver = mrev + 1
+
             m1, m2 = st.columns(2)
-            img = m1.text_input("Image path", a["image_path"] or "", key=f"i{a['id']}")
-            vid = m2.text_input("Video path", a["video_path"] or "", key=f"v{a['id']}")
+            img = m1.text_input("Image path", a["image_path"] or "",
+                                key=f"i{a['id']}_{mrev}")
+            vid = m2.text_input("Video path", a["video_path"] or "",
+                                key=f"v{a['id']}_{mrev}")
 
             # ---- media: idea -> expanded prompt -> generate, or upload ------
-            next_ver = len(db.list_versions(a["id"])) + 1
             idea = st.text_area(
                 "Image/video idea", a["image_idea"] or "", key=f"idea{a['id']}",
                 height=70,
                 help=f"{a['platform']} target {media.aspect_label(a['platform'])}; "
                      f"video is 9:16")
+
+            mkey = f"mmsg{a['id']}"
+            if mkey in st.session_state:
+                kind, msg = st.session_state.pop(mkey)
+                (st.warning if kind == "warn" else st.success)(msg)
 
             pkey = f"prompt{a['id']}"
             g0, g1, g2, g3 = st.columns([1, 1, 1, 1])
@@ -177,18 +190,32 @@ with rev:
                     placeholder="Press Expand prompt, or generate directly to expand now.")
 
             def _remedia(image_path, video_path, label):
-                """New media is a new version and re-enters review."""
+                """New media is a new version and re-enters review.
+
+                Adding a version bumps `mrev`, which re-keys the path inputs so
+                they re-read the row. Previously the stale widget kept showing
+                an empty box and a later "Save edit" wrote that emptiness back
+                over the media.
+                """
                 ver, new_status, reasons, needs = review.apply_edit(
                     a, a["content"], image_path, video_path, edited_by="human")
-                msg = f"{label} · v{ver} → {new_status}"
-                (st.warning if needs or new_status == "blocked" else st.success)(
-                    msg + (f" · {'; '.join(reasons)}" if reasons else ""))
+                st.session_state[f"mmsg{a['id']}"] = (
+                    ("warn" if needs or new_status == "blocked" else "ok"),
+                    f"{label} · v{ver} → {new_status}"
+                    + (f" · {'; '.join(reasons)}" if reasons else ""))
 
             if g1.button("Generate image", key=f"gi{a['id']}"):
                 with st.spinner("Generating image..."):
-                    prm = prompt_text.strip() or media.expand_prompt(idea, a)
-                    path, prov = media.generate_image(prm, a, next_ver)
-                _remedia(path, a["video_path"], f"Image via {prov}")
+                    try:
+                        prm = prompt_text.strip() or media.expand_prompt(idea, a)
+                        # generate_image already falls back to the Pillow card;
+                        # this guards anything the chain cannot absorb
+                        path, prov = media.generate_image(prm, a, next_ver)
+                    except Exception as e:
+                        path, prov = None, None
+                        st.session_state[mkey] = ("warn", f"Image generation failed: {e}")
+                if path:
+                    _remedia(path, a["video_path"], f"Image via {prov}")
                 st.rerun()
 
             if g2.button("Generate video", key=f"gv{a['id']}"):
@@ -197,20 +224,23 @@ with rev:
                         path, prov, script = media.generate_video(idea, a, next_ver)
                     except Exception as e:
                         path = None
-                        st.warning(f"Video unavailable: {e}")
+                        st.session_state[mkey] = ("warn", f"Video unavailable: {e}")
                 if path:
-                    st.caption(f"Voiceover: {script['voiceover']}")
                     _remedia(a["image_path"], path, f"Video via {prov}")
-                    st.rerun()
+                st.rerun()
 
             up = g3.file_uploader("Upload your own", type=["png", "jpg", "jpeg", "webp", "mp4"],
-                                  key=f"up{a['id']}", label_visibility="collapsed")
+                                  key=f"up{a['id']}", label_visibility="collapsed",
+                                  help="Images up to 5 MB, mp4 up to 25 MB. "
+                                       "Type is checked from the file header.")
             if up is not None and st.button("Use upload", key=f"uu{a['id']}"):
                 try:
                     # validated by header bytes, not the extension
                     path, kind = media.save_upload(up.getvalue(), a["id"], next_ver)
-                except ValueError as e:
-                    st.error(f"Rejected: {e}")
+                except Exception as e:
+                    # a bad file must never take the card down
+                    st.session_state[mkey] = ("warn", f"Rejected: {e}")
+                    st.rerun()
                 else:
                     _remedia(path if kind == "image" else a["image_path"],
                              path if kind == "video" else a["video_path"],
@@ -236,7 +266,8 @@ with rev:
             if e1.button("Save edit", key=f"e{a['id']}"):
                 with st.spinner("Re-running compliance..."):
                     ver, new_status, reasons, needs = review.apply_edit(
-                        a, text, img or None, vid or None, edited_by="human")
+                        a, text, img.strip() or None, vid.strip() or None,
+                        edited_by="human")
                 msg = f"Saved v{ver} → {new_status}"
                 (st.warning if needs or new_status == "blocked" else st.success)(
                     msg + (f" · {'; '.join(reasons)}" if reasons else ""))

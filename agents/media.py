@@ -342,12 +342,20 @@ def save_upload(data, asset_id, version):
     stem = f"{asset_id}_v{version}_up{uuid.uuid4().hex[:6]}"
     if kind == "image":
         from PIL import Image
-        img = Image.open(io.BytesIO(data))
-        img = img.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB")
-        clean = Image.new(img.mode, img.size)
-        clean.putdata(list(img.getdata()))          # pixels only: no EXIF carried over
-        out = _dir() / f"{stem}.png"
-        clean.save(out, "PNG")
+        try:
+            img = Image.open(io.BytesIO(data))
+            img.load()                              # force a real decode now
+            img = img.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB")
+            clean = Image.new(img.mode, img.size)
+            clean.putdata(list(img.getdata()))      # pixels only: no EXIF carried over
+            out = _dir() / f"{stem}.png"
+            clean.save(out, "PNG")
+        except ValueError:
+            raise
+        except Exception as e:
+            # a correct header over a corrupt body: reject cleanly rather than
+            # letting PIL's OSError escape to the caller
+            raise ValueError(f"image could not be decoded ({type(e).__name__})")
         return str(out), kind
 
     out = _dir() / f"{stem}.mp4"

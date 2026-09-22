@@ -1,5 +1,10 @@
 # Prism dark theme. Sets native chrome (popovers, scrollbars, toolbar) that CSS
 # can't reach; theme.py layers the finer styling on top.
+[server]
+# the uploader advertises this limit; agents/media.py still enforces the real
+# caps per type (5 MB images, 25 MB mp4) by reading the header bytes
+maxUploadSize = 25
+
 [theme]
 base = "dark"
 primaryColor = "#b9c6d8"
