@@ -272,6 +272,35 @@ header [data-testid="stHeaderActionElements"] {{
 /* the Enter button sits in its own centred column */
 [class*="st-key-enter-"] {{ display:flex; justify-content:center; }}
 
+/* ---- platform feed preview ---- */
+.ja-feed {{
+  border:1px solid {LINE}; border-radius:12px; overflow:hidden;
+  background:{PANEL_GLASS}; margin-top:10px;
+}}
+.ja-feed-top {{ display:flex; gap:10px; align-items:center; padding:10px 12px; }}
+.ja-feed-av {{
+  width:34px; height:34px; border-radius:50%; background:{LINE_SOFT};
+  display:flex; align-items:center; justify-content:center;
+  font-size:12px; color:{ACCENT}; flex:0 0 34px;
+}}
+.ja-feed-name {{ font-size:13px; color:{HEAD}; }}
+.ja-feed-sub {{ font-size:11px; color:{MUTED}; }}
+.ja-feed-body {{ font-size:13px; line-height:1.6; color:{BODY}; padding:0 12px 10px; white-space:pre-wrap; }}
+.ja-feed-bar {{
+  display:flex; gap:16px; padding:8px 12px; border-top:1px solid {LINE_SOFT};
+  font-size:11px; color:{MUTED};
+}}
+.ja-pub {{
+  border:1px solid {SILVER_LINE}; border-radius:10px; padding:10px 12px;
+  margin-top:10px; font-size:12px;
+}}
+.ja-pub-k {{ color:{MUTED}; }}
+.ja-pub-v {{ color:{ACCENT}; font-family:monospace; }}
+.ja-pub pre {{
+  background:{INSET}; border:1px solid {CHIP_LINE}; border-radius:8px;
+  padding:8px 10px; font-size:11px; color:{BODY}; overflow-x:auto; margin:8px 0 0;
+}}
+
 /* ---- approved queue: compact row cards ---- */
 .ja-qrow {{
   background:{PANEL_GLASS}; border:1px solid {LINE}; border-radius:10px;
@@ -527,7 +556,11 @@ def queue_card(asset, preview_chars=150):
     err = asset.get("post_error")
     if post_id:
         via = f" · via {_esc(post_provider)}" if post_provider else ""
-        tail = f'<div class="ja-qrow-post">post_id {_esc(post_id)}{via}</div>'
+        url = (asset.get("post_url") or "").strip()
+        link = (f'<div class="ja-qrow-post"><a href="{_esc(url)}" target="_blank" '
+                f'rel="noopener noreferrer" style="color:{ACCENT};">View live post ↗</a>'
+                f'</div>' if url.startswith(("http://", "https://")) else "")
+        tail = f'<div class="ja-qrow-post">post_id {_esc(post_id)}{via}</div>{link}'
     elif err:
         tail = f'<div class="ja-qrow-err">{_esc(err)}</div>'
     elif asset.get("status") == "posting":
@@ -573,3 +606,48 @@ def paused_pill():
     return (f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;'
             f'background:#3d1414;border:1px solid {RED};color:#F5A3A3;">'
             f'Publishing paused</span>')
+
+
+def feed_header(brand, niche, platform):
+    """Platform-styled author row for a feed preview."""
+    words = str(brand).split()
+    caps = [c for c in str(brand) if c.isupper()]
+    initials = ("".join(w[0] for w in words[:2]) if len(words) > 1
+                else "".join(caps[:2]) or str(brand)[:1]).upper()
+    sub = ("Sponsored · Just now" if platform == "LinkedIn"
+           else "Sponsored" if platform == "Instagram" else "Promoted")
+    return (f'<div class="ja-feed-top"><div class="ja-feed-av">{_esc(initials)}</div>'
+            f'<div><div class="ja-feed-name">{_esc(brand)}</div>'
+            f'<div class="ja-feed-sub">{_esc(niche)} · {_esc(sub)}</div></div></div>')
+
+
+def feed_caption(text, platform):
+    bar = {"LinkedIn": ["△ Like", "↰ Comment", "↪ Repost", "↗ Send"],
+           "Instagram": ["♡ Like", "○ Comment", "↪ Share", "☆ Save"]}.get(
+        platform, ["△ Like", "↪ Share"])
+    return (f'<div class="ja-feed-body">{_esc(text)}</div>'
+            f'<div class="ja-feed-bar">' + "".join(f"<span>{b}</span>" for b in bar) + "</div>")
+
+
+def published_panel(asset, entry=None):
+    """What the adapter actually sent, the post_id, and the outbox record."""
+    import json as _json
+    rows = [("Status", asset.get("status")), ("post_id", asset.get("post_id") or "-"),
+            ("Provider", asset.get("post_provider") or "-"),
+            ("Image", asset.get("image_path") or "-"),
+            ("Video", asset.get("video_path") or "-")]
+    body = "".join(f'<div><span class="ja-pub-k">{_esc(k)}:</span> '
+                   f'<span class="ja-pub-v">{_esc(v)}</span></div>' for k, v in rows)
+    raw = ""
+    if entry:
+        raw = f"<pre>{_esc(_json.dumps(entry, indent=2, ensure_ascii=False))}</pre>"
+    label = "Published (dry-run)" if (asset.get("post_provider") == "dry-run") else "Published"
+    return (f'<div class="ja-pub"><div style="color:{GREEN};margin-bottom:6px;">'
+            f'{label}</div>{body}{raw}</div>')
+
+
+def live_pill():
+    """Unmissable marker that real posting is armed."""
+    return (f'<span style="font-size:11px;font-weight:700;letter-spacing:1px;'
+            f'padding:3px 10px;border-radius:999px;background:{RED};color:#fff;">'
+            f'● LIVE</span>')

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS assets(
   post_provider TEXT,                     -- dry-run | ayrshare: who published it
   post_error TEXT,                        -- why the last publish attempt failed
   publish_at TEXT,                        -- ISO time the worker may publish from
+  post_url TEXT,                          -- live URL returned by the provider
   image_path TEXT, video_path TEXT,       -- current media, versioned below
   needs_rereview INTEGER DEFAULT 0,       -- edited after approval
   reviewed_at TEXT, post_id TEXT
@@ -67,7 +68,8 @@ def init():
             c.execute("ALTER TABLE assets ADD COLUMN post_provider TEXT")
         if "post_error" not in have:
             c.execute("ALTER TABLE assets ADD COLUMN post_error TEXT")
-        for col, decl in (("publish_at", "TEXT"), ("image_path", "TEXT"),
+        for col, decl in (("publish_at", "TEXT"), ("post_url", "TEXT"),
+                          ("image_path", "TEXT"),
                           ("video_path", "TEXT"),
                           ("needs_rereview", "INTEGER DEFAULT 0")):
             if col not in have:
@@ -208,12 +210,13 @@ def claim_asset(asset_id, actor="worker"):
         return False
 
 
-def mark_scheduled(asset_id, post_id, post_provider, actor="worker"):
+def mark_scheduled(asset_id, post_id, post_provider, post_url=None, actor="worker"):
     with conn() as c:
         c.execute("""UPDATE assets SET status='scheduled', post_id=?, post_provider=?,
-                     post_error=NULL WHERE id=?""",
-                  (post_id, post_provider, asset_id))
-        log(c, asset_id, "posted", actor, f"{post_provider} {post_id}")
+                     post_url=?, post_error=NULL WHERE id=?""",
+                  (post_id, post_provider, post_url, asset_id))
+        log(c, asset_id, "posted", actor,
+            f"{post_provider} {post_id}" + (f" {post_url}" if post_url else ""))
 
 
 def mark_failed(asset_id, reason, actor="worker"):
@@ -315,3 +318,12 @@ def apply_version(asset_id, caption, image_path, video_path, new_status,
         log(c, asset_id, f"edited v{version}", edited_by,
             f"status -> {new_status}" + (" (needs re-review)" if needs_rereview else ""))
         return version
+
+
+def live_posting():
+    """Human-armed switch for real publishing. Off unless explicitly enabled."""
+    return get_setting("live_posting", "0") == "1"
+
+
+def set_live_posting(on, actor="human"):
+    set_setting("live_posting", "1" if on else "0", actor)

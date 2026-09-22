@@ -1,10 +1,11 @@
 import datetime as _dt
 import difflib
+import os
 import altair as alt
 import pandas as pd
 import streamlit as st
 import db, pipeline, review, theme, vanta, worker
-from agents import llm, compliance, publisher
+from agents import llm, compliance, media, publisher
 from agents.llm import live, MODEL
 from config import BRANDS, PLATFORMS, LANGUAGES, FEEDBACK_TAGS
 
@@ -63,6 +64,9 @@ else:
     mode = f"LIVE ({MODEL})"
 if llm.exhausted_models:
     mode += f" | exhausted: {', '.join(sorted(llm.exhausted_models))}"
+if publisher.live_armed():
+    st.markdown(f'<div style="text-align:right;margin-bottom:-6px;">'
+                f'{theme.live_pill()}</div>', unsafe_allow_html=True)
 st.markdown(
     theme.header("Research → Create → Comply → Review → Learn", mode,
                  ok=live() and not llm.last_error),
@@ -151,6 +155,83 @@ with rev:
             img = m1.text_input("Image path", a["image_path"] or "", key=f"i{a['id']}")
             vid = m2.text_input("Video path", a["video_path"] or "", key=f"v{a['id']}")
 
+            # ---- media: idea -> expanded prompt -> generate, or upload ------
+            next_ver = len(db.list_versions(a["id"])) + 1
+            idea = st.text_area(
+                "Image/video idea", a["image_idea"] or "", key=f"idea{a['id']}",
+                height=70,
+                help=f"{a['platform']} target {media.aspect_label(a['platform'])}; "
+                     f"video is 9:16")
+
+            pkey = f"prompt{a['id']}"
+            g0, g1, g2, g3 = st.columns([1, 1, 1, 1])
+            if g0.button("Expand prompt", key=f"xp{a['id']}"):
+                with st.spinner("Expanding..."):
+                    st.session_state[pkey] = media.expand_prompt(idea, a)
+                st.rerun()
+
+            with st.expander("Generated prompt", expanded=False):
+                prompt_text = st.text_area(
+                    "Editable before generating", st.session_state.get(pkey, ""),
+                    key=f"pt{a['id']}", height=130,
+                    placeholder="Press Expand prompt, or generate directly to expand now.")
+
+            def _remedia(image_path, video_path, label):
+                """New media is a new version and re-enters review."""
+                ver, new_status, reasons, needs = review.apply_edit(
+                    a, a["content"], image_path, video_path, edited_by="human")
+                msg = f"{label} · v{ver} → {new_status}"
+                (st.warning if needs or new_status == "blocked" else st.success)(
+                    msg + (f" · {'; '.join(reasons)}" if reasons else ""))
+
+            if g1.button("Generate image", key=f"gi{a['id']}"):
+                with st.spinner("Generating image..."):
+                    prm = prompt_text.strip() or media.expand_prompt(idea, a)
+                    path, prov = media.generate_image(prm, a, next_ver)
+                _remedia(path, a["video_path"], f"Image via {prov}")
+                st.rerun()
+
+            if g2.button("Generate video", key=f"gv{a['id']}"):
+                with st.spinner("Rendering video (this takes ~30s)..."):
+                    try:
+                        path, prov, script = media.generate_video(idea, a, next_ver)
+                    except Exception as e:
+                        path = None
+                        st.warning(f"Video unavailable: {e}")
+                if path:
+                    st.caption(f"Voiceover: {script['voiceover']}")
+                    _remedia(a["image_path"], path, f"Video via {prov}")
+                    st.rerun()
+
+            up = g3.file_uploader("Upload your own", type=["png", "jpg", "jpeg", "webp", "mp4"],
+                                  key=f"up{a['id']}", label_visibility="collapsed")
+            if up is not None and st.button("Use upload", key=f"uu{a['id']}"):
+                try:
+                    # validated by header bytes, not the extension
+                    path, kind = media.save_upload(up.getvalue(), a["id"], next_ver)
+                except ValueError as e:
+                    st.error(f"Rejected: {e}")
+                else:
+                    _remedia(path if kind == "image" else a["image_path"],
+                             path if kind == "video" else a["video_path"],
+                             f"Uploaded {kind}")
+                    st.rerun()
+
+            # ---- feed preview ----------------------------------------------
+            with st.expander(f"{a['platform']} preview", expanded=False):
+                st.markdown('<div class="ja-feed">' + theme.feed_header(
+                    a["brand"], BRANDS.get(a["brand"], {}).get("niche", ""),
+                    a["platform"]) + "</div>", unsafe_allow_html=True)
+                if a["video_path"] and os.path.exists(a["video_path"]):
+                    st.video(a["video_path"])
+                elif a["image_path"] and os.path.exists(a["image_path"]):
+                    st.image(a["image_path"], use_container_width=True)
+                else:
+                    st.caption("No media yet")
+                st.markdown('<div class="ja-feed">' +
+                            theme.feed_caption(text, a["platform"]) + "</div>",
+                            unsafe_allow_html=True)
+
             e1, e2 = st.columns([1, 3])
             if e1.button("Save edit", key=f"e{a['id']}"):
                 with st.spinner("Re-running compliance..."):
@@ -237,6 +318,22 @@ with queue:
             if paused != db.publishing_paused():
                 db.set_publishing_paused(paused)
                 st.rerun()
+
+            has_key = bool(os.getenv("AYRSHARE_API_KEY"))
+            want_live = st.toggle("Live posting", value=db.live_posting(),
+                                  key="live-toggle", disabled=not has_key,
+                                  help=None if has_key else "Set AYRSHARE_API_KEY first")
+            if not want_live and db.live_posting():
+                db.set_live_posting(False)          # switching off needs no ceremony
+                st.rerun()
+            elif want_live and not db.live_posting():
+                st.warning("This will publish to the linked social account. Continue?")
+                cy, cn = st.columns(2)
+                if cy.button("Yes, go live", key="live-yes", type="primary"):
+                    db.set_live_posting(True)
+                    st.rerun()
+                if cn.button("Cancel", key="live-no"):
+                    st.rerun()
         with bcol:
             if st.button("Run worker once", key="worker-once",
                          use_container_width=True):
@@ -275,8 +372,27 @@ with queue:
             with st.container(key=f"section-queue-{label.split()[0].lower()}"):
                 st.markdown(theme.section_label(f"{label} · {len(group)}"),
                             unsafe_allow_html=True)
-                st.markdown("".join(theme.queue_card(a) for a in group),
-                            unsafe_allow_html=True)
+                for qa in group:
+                    st.markdown(theme.queue_card(qa), unsafe_allow_html=True)
+                    has_media = ((qa["image_path"] and os.path.exists(qa["image_path"]))
+                                 or (qa["video_path"] and os.path.exists(qa["video_path"])))
+                    if not (has_media or qa["post_id"]):
+                        continue
+                    with st.expander(f"#{qa['id']} · {qa['platform']} preview", expanded=False):
+                        st.markdown('<div class="ja-feed">' + theme.feed_header(
+                            qa["brand"], BRANDS.get(qa["brand"], {}).get("niche", ""),
+                            qa["platform"]) + "</div>", unsafe_allow_html=True)
+                        if qa["video_path"] and os.path.exists(qa["video_path"]):
+                            st.video(qa["video_path"])
+                        elif qa["image_path"] and os.path.exists(qa["image_path"]):
+                            st.image(qa["image_path"], use_container_width=True)
+                        st.markdown('<div class="ja-feed">' +
+                                    theme.feed_caption(qa["content"], qa["platform"]) +
+                                    "</div>", unsafe_allow_html=True)
+                        if qa["post_id"]:
+                            st.markdown(theme.published_panel(
+                                qa, publisher.last_outbox_entry(qa["post_id"])),
+                                unsafe_allow_html=True)
 
 with insights:
     reviewed = [a for a in db.list_assets() if a["status"] in ("approved", "rejected", "scheduled")]

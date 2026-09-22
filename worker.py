@@ -36,6 +36,10 @@ def _publish_claimed(asset):
             if existing:
                 return publisher.update(asset, existing)
             return publisher.publish(asset)
+        except publisher.ValidationError as e:
+            # the request itself was rejected; retrying sends the same thing
+            print(f"[worker] #{asset['id']} rejected, not retrying: {e}")
+            raise
         except Exception as e:
             last = e
             print(f"[worker] #{asset['id']} attempt {attempt}/{MAX_ATTEMPTS} failed: {e}")
@@ -62,12 +66,21 @@ def run_once():
             counts["skipped_mock"] += 1
             continue
 
+        # platform mapping, linkage and Instagram media are checked before the
+        # claim, so a rejection costs no API call
+        blocker = publisher.preflight(asset)
+        if blocker:
+            db.mark_failed(asset["id"], blocker)
+            counts["failed"] += 1
+            print(f"[worker] #{asset['id']} not publishable: {blocker}")
+            continue
+
         if not db.claim_asset(asset["id"]):
             counts["lost_race"] += 1      # another worker took it
             continue
 
         try:
-            post_id, provider = _publish_claimed(asset)
+            post_id, provider, post_url = _publish_claimed(asset)
         except Exception as e:
             db.mark_failed(asset["id"], e)
             counts["failed"] += 1
@@ -77,7 +90,7 @@ def run_once():
             db.release_asset(asset["id"])
             raise
         else:
-            db.mark_scheduled(asset["id"], post_id, provider)
+            db.mark_scheduled(asset["id"], post_id, provider, post_url)
             key = "updated" if asset.get("post_id") else "posted"
             counts[key] += 1
             print(f"[worker] #{asset['id']} {key} -> {provider} {post_id}")
@@ -129,7 +142,8 @@ def main(argv=None):
     db.init()
     mode = publisher.active_provider()
     print(f"[worker] provider={mode} poll={POLL_SECONDS}s"
-          + (" (dry-run: writes outbox.jsonl)" if mode == "dry-run" else "")
+          + (" (dry-run: writes outbox.jsonl)" if mode == "dry-run"
+             else " [LIVE: posts to real accounts]")
           + (" [PUBLISHING PAUSED]" if db.publishing_paused() else ""))
 
     if args.once:
