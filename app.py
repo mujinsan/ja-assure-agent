@@ -2,14 +2,43 @@ import difflib
 import altair as alt
 import pandas as pd
 import streamlit as st
-import db, pipeline, review, theme
-from agents import llm, compliance
+import db, pipeline, review, theme, vanta, worker
+from agents import llm, compliance, publisher
 from agents.llm import live, MODEL
 from config import BRANDS, PLATFORMS, LANGUAGES, FEEDBACK_TAGS
 
 st.set_page_config(page_title="JA Assure AI Marketing Agent", layout="wide")
 db.init()
 st.markdown(theme.CSS, unsafe_allow_html=True)
+
+# --- animated background + intro splash -------------------------------------
+st.session_state.setdefault("entered", False)
+
+if not st.session_state["entered"]:
+    if st.session_state.get("bg_on", True):
+        vanta.render()                       # full strength, no scrim
+    st.markdown(theme.splash(), unsafe_allow_html=True)
+    _l, _mid, _r = st.columns([2, 1, 2])
+    with _mid:
+        if st.button("Enter", type="primary", key="enter-btn",
+                     use_container_width=True):
+            st.session_state["entered"] = True
+            st.rerun()
+    st.stop()                                # renders the splash and nothing else
+
+# st.sidebar does not mount in Streamlit 1.63 (reproducible with no custom CSS),
+# so these controls sit in a right-aligned row instead.
+_sp, _tg, _rp = st.columns([6, 2, 2])
+with _tg:
+    bg_on = st.toggle("Animated background", value=True, key="bg_on")
+with _rp:
+    if st.button("Replay intro", type="tertiary"):
+        st.session_state["entered"] = False
+        st.rerun()
+if bg_on:
+    vanta.render()
+    st.markdown(theme.main_overlay(), unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
 
 if not live():
     mode = "MOCK (no GEMINI_API_KEY)"
@@ -133,13 +162,63 @@ with rev:
                     st.rerun()
 
 with queue:
-    st.caption("Project 2 contract: a worker polls status='approved', posts, sets status='scheduled' + post_id.")
-    rows = db.list_assets("approved") + db.list_assets("scheduled")
-    if rows:
-        st.dataframe(pd.DataFrame(rows)[["id", "brand", "platform", "language", "content", "status", "post_id"]],
-                     use_container_width=True)
-    else:
+    awaiting = db.list_assets("approved")
+    in_flight = db.list_assets("posting")
+    posted = db.list_assets("scheduled")
+    failed = db.list_assets("failed")
+
+    with st.container(key="section-queue"):
+        st.markdown(theme.section_label("Approved queue"), unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="font-size:12px;color:{theme.MUTED};margin:-4px 0 14px 0;">'
+            "Project 2 contract: a worker polls status='approved', posts, then sets "
+            "status='scheduled' and writes back a post_id.</div>",
+            unsafe_allow_html=True)
+
+        pcol, bcol = st.columns([3, 1])
+        with pcol:
+            st.markdown(theme.provider_pill(publisher.active_provider()),
+                        unsafe_allow_html=True)
+        with bcol:
+            if st.button("Run worker once", key="worker-once",
+                         use_container_width=True):
+                with st.spinner("Publishing approved assets..."):
+                    counts = worker.run_once()
+                st.success(" · ".join(f"{k.replace('_', ' ')}: {v}"
+                                           for k, v in counts.items() if v) or "Nothing to post")
+                st.rerun()
+
+        platforms_covered = len({a["platform"] for a in awaiting + posted})
+        q1, q2, q3 = st.columns(3)
+        with q1:
+            st.markdown(theme.soft_metric_card(
+                "Awaiting post", str(len(awaiting)),
+                "Ready for the worker" if awaiting else "Nothing queued",
+                theme.ACCENT if awaiting else theme.MUTED), unsafe_allow_html=True)
+        with q2:
+            st.markdown(theme.soft_metric_card(
+                "Posted", str(len(posted)),
+                "Has post_id" if posted else "None posted yet",
+                theme.GREEN if posted else theme.MUTED), unsafe_allow_html=True)
+        with q3:
+            st.markdown(theme.soft_metric_card(
+                "Platforms", str(platforms_covered),
+                ", ".join(sorted({a["platform"] for a in awaiting + posted})) or "—",
+                theme.MUTED), unsafe_allow_html=True)
+
+    if not (awaiting or in_flight or posted or failed):
         st.info("No approved assets yet.")
+    else:
+        # one markdown call per group: queue_card emits no widgets
+        for label, group in (("Awaiting post", awaiting), ("Posting", in_flight),
+                             ("Posted", posted), ("Failed", failed)):
+            if not group:
+                continue
+            with st.container(key=f"section-queue-{label.split()[0].lower()}"):
+                st.markdown(theme.section_label(f"{label} · {len(group)}"),
+                            unsafe_allow_html=True)
+                st.markdown("".join(theme.queue_card(a) for a in group),
+                            unsafe_allow_html=True)
 
 with insights:
     reviewed = [a for a in db.list_assets() if a["status"] in ("approved", "rejected", "scheduled")]

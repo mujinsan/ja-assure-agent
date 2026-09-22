@@ -30,3 +30,31 @@ Nothing is publishable without human approval.
 
 ## Roadmap (hackathon day)
 Video/Reels (script -> TTS -> MoviePy), lead-gen agent, competitor digest, Project 2 poster worker (Buffer API).
+
+## Project 2: worker
+
+The posting worker drains the approved queue.
+
+```bash
+python worker.py          # poll every POLL_SECONDS (default 10)
+python worker.py --once   # single pass, then exit
+```
+
+It polls `assets` for `status='approved'` and claims each one with a
+conditional `UPDATE ... WHERE status='approved'`, so two workers racing on the
+same asset produce exactly one winner and nothing is ever posted twice. On
+success the asset becomes `scheduled` with a `post_id` and `post_provider`; on
+failure it retries three times with backoff, then becomes `failed` with the
+reason in `post_error`. Every transition is written to the hash-chained audit
+log with actor `worker`.
+
+Providers live in `agents/publisher.py`:
+
+- **dry-run** (default) appends each post to `outbox.jsonl` and returns a
+  `dry-<uuid8>` id. No network, no keys, safe for demos.
+- **ayrshare** is used only when `AYRSHARE_API_KEY` is set, and posts through
+  Ayrshare's REST API.
+
+Assets whose content came from the mock template are never published, and only
+`approved` assets are ever picked up. The Approved queue tab has a
+**Run worker once** button for a single pass without leaving the app.

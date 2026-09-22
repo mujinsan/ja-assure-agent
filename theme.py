@@ -10,6 +10,7 @@ import html
 
 BG = "#0a0a0c"
 PANEL = "#141418"
+PANEL_GLASS = "rgba(20,20,24,.74)"   # cards sit over the animated background
 INSET = "#0f0f12"
 LINE = "#2e2e36"
 LINE_SOFT = "#26262e"
@@ -31,6 +32,8 @@ STATUS = {
     "approved":  ("#10301f", "#9FE1CB", "Approved"),
     "rejected":  ("#2b2b33", "#b9b9c2", "Rejected"),
     "scheduled": ("#12243a", "#a8c8f0", "Scheduled"),
+    "posting":   ("#2a1c05", "#FAC775", "Posting"),
+    "failed":    ("#3d1414", "#F5A3A3", "Failed"),
 }
 
 RED = "#F5534E"          # reserved: compliance and security signals only
@@ -83,7 +86,11 @@ CSS = f"""
 
 html, body {{ background:{BG}; }}
 
-/* ---- pin vanta background iframe behind the whole app ---- */
+/* ---- pin vanta background iframe behind the whole app ----
+   Streamlit 1.63 renders components.html as iframe.stIFrame / title="st.iframe";
+   the older component testids are kept for other versions. ---- */
+iframe.stIFrame,
+iframe[title="st.iframe"],
 iframe[title="streamlit.components.v1.html"],
 [data-testid="stCustomComponentV1"],
 [data-testid="stCustomComponentV1"] > iframe {{
@@ -100,16 +107,29 @@ iframe[title="streamlit.components.v1.html"],
   padding: 0 !important;
 }}
 
+/* collapse the block the pinned iframe would otherwise occupy */
+[data-testid="stElementContainer"]:has(> iframe.stIFrame),
+[data-testid="stElementContainer"]:has(> iframe[title="st.iframe"]) {{
+  height: 0 !important; min-height: 0 !important;
+  margin: 0 !important; padding: 0 !important; overflow: visible !important;
+}}
+
 /* ---- transparent containers & content z-index ---- */
 .stApp,
+[data-testid="stApp"],
 [data-testid="stAppViewContainer"],
 [data-testid="stHeader"],
+[data-testid="stMain"],
+[data-testid="stMainBlockContainer"],
+[data-testid="stSidebar"],
 .main,
 .block-container {{
   background: transparent !important;
 }}
 
-[data-testid="stAppViewContainer"] > .main,
+[data-testid="stMain"],
+[data-testid="stMainBlockContainer"],
+[data-testid="stSidebar"],
 .block-container,
 [data-testid="stHeader"] {{
   position: relative;
@@ -144,7 +164,8 @@ iframe[title="streamlit.components.v1.html"],
 
 /* ---- the review card: a real container holding real widgets ---- */
 [class*="st-key-jacard-"] {{
-  background:{PANEL}; border:1px solid {LINE}; border-radius:12px;
+  background:{PANEL_GLASS}; backdrop-filter:blur(3px);
+  border:1px solid {LINE}; border-radius:12px;
   padding:14px 16px; margin-bottom:14px;
   position:relative;   /* anchors the BLOCKED stamp */
 }}
@@ -236,9 +257,57 @@ header [data-testid="stHeaderActionElements"] {{
   }}
 }}
 
+/* ---- intro splash ---- */
+.ja-splash {{
+  position:relative; z-index:1; min-height:62vh;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; gap:10px;
+}}
+.ja-splash .ja-splash-title {{
+  font-family:{SERIF}; font-size:54px; line-height:1.1; color:{HEAD};
+}}
+.ja-splash .ja-splash-tag {{
+  font-size:13px; letter-spacing:1px; color:{ACCENT};
+}}
+/* the Enter button sits in its own centred column */
+[class*="st-key-enter-"] {{ display:flex; justify-content:center; }}
+
+/* ---- approved queue: compact row cards ---- */
+.ja-qrow {{
+  background:{PANEL_GLASS}; border:1px solid {LINE}; border-radius:10px;
+  padding:10px 14px; margin-bottom:8px;
+}}
+.ja-qrow-top {{
+  display:flex; justify-content:space-between; align-items:center;
+  gap:8px; flex-wrap:wrap;
+}}
+.ja-qrow .ja-chips {{ display:flex; gap:6px; flex-wrap:wrap; }}
+.ja-qrow .ja-chip {{
+  font-size:11px; padding:2px 8px; border:1px solid {CHIP_LINE};
+  border-radius:6px; color:{MUTED};
+}}
+.ja-qrow-prev {{ font-size:12px; color:{BODY}; margin-top:8px; line-height:1.55; }}
+/* native <details> so a queue row needs no Streamlit widget */
+.ja-qrow details {{ margin-top:8px; }}
+.ja-qrow summary {{
+  font-size:11px; color:{MUTED}; cursor:pointer; list-style:none;
+}}
+.ja-qrow summary::-webkit-details-marker {{ display:none; }}
+.ja-qrow summary::before {{ content:"B8  "; }}
+.ja-qrow details[open] summary::before {{ content:"BE  "; }}
+.ja-qrow summary:hover {{ color:{ACCENT}; }}
+.ja-qrow-full {{
+  font-size:12px; color:{BODY}; white-space:pre-wrap; line-height:1.6;
+  margin-top:6px; background:{INSET}; border:1px solid {CHIP_LINE};
+  border-radius:8px; padding:8px 10px;
+}}
+.ja-qrow-post {{ font-size:11px; color:{ACCENT}; margin-top:6px; font-family:monospace; }}
+.ja-qrow-wait {{ font-size:11px; color:{MUTED}; margin-top:6px; }}
+.ja-qrow-err {{ font-size:11px; color:#F5A3A3; margin-top:6px; font-family:monospace; }}
+
 /* ---- soft metric cards fallback/native styling ---- */
 [data-testid="stMetric"] {{
-  background: {PANEL};
+  background: {PANEL_GLASS};
   border: 1px solid {LINE};
   border-radius: 12px;
   padding: 14px 18px;
@@ -418,7 +487,7 @@ def soft_metric_card(label, value, trend_text=None, trend_color=None):
         color = trend_color or MUTED
         trend_html = f'<div style="font-size:11px;color:{color};margin-top:6px;">{_esc(trend_text)}</div>'
     return f"""
-<div style="background:{PANEL};border:1px solid {LINE};border-radius:12px;padding:14px 18px;">
+<div style="background:{PANEL_GLASS};border:1px solid {LINE};border-radius:12px;padding:14px 18px;">
   <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.8px;color:{MUTED};font-weight:500;">{_esc(label)}</div>
   <div style="font-family:{SERIF};font-size:32px;line-height:1.15;color:{HEAD};margin:6px 0 2px 0;">{_esc(value)}</div>
   {trend_html}
@@ -426,3 +495,68 @@ def soft_metric_card(label, value, trend_text=None, trend_color=None):
 """
 
 
+
+
+def splash(title="JA Assure · AI marketing agent",
+           tagline="Research → Create → Comply → Review → Learn"):
+    """Intro overlay. Text is painted immediately; the topology loads behind it."""
+    return (f'<div class="ja-splash">'
+            f'<div class="ja-splash-title">{_esc(title)}</div>'
+            f'<div class="ja-splash-tag">{_esc(tagline)}</div>'
+            f'</div>')
+
+
+def main_overlay():
+    """Dark scrim over the background so body text stays readable."""
+    return '<div class="ja-main-overlay"></div>'
+
+
+def queue_card(asset, preview_chars=150):
+    """One compact queue row. Pure HTML - no Streamlit widget, so a whole
+    queue can be emitted in a single markdown call."""
+    content = (asset.get("content") or "").strip()
+    flat = " ".join(content.split())
+    preview = flat if len(flat) <= preview_chars else flat[:preview_chars - 1].rstrip() + "…"
+    chips = "".join(
+        f'<span class="ja-chip">{_esc(v)}</span>' for v in
+        [f"#{asset.get('id')}", asset.get("brand"), asset.get("platform"),
+         asset.get("language"), f"Variant {asset.get('variant')}"] if v)
+    bg, fg, label = STATUS.get(asset.get("status"), ("#2b2b33", BODY, asset.get("status")))
+    post_id = asset.get("post_id")
+    post_provider = asset.get("post_provider")
+    err = asset.get("post_error")
+    if post_id:
+        via = f" · via {_esc(post_provider)}" if post_provider else ""
+        tail = f'<div class="ja-qrow-post">post_id {_esc(post_id)}{via}</div>'
+    elif err:
+        tail = f'<div class="ja-qrow-err">{_esc(err)}</div>'
+    elif asset.get("status") == "posting":
+        tail = '<div class="ja-qrow-wait">Claimed by a worker…</div>'
+    else:
+        tail = '<div class="ja-qrow-wait">Not posted yet</div>' 
+    more = ("" if len(flat) <= preview_chars else
+            f'<details><summary>Full content</summary>'
+            f'<div class="ja-qrow-full">{_esc(content)}</div></details>')
+    return f"""
+<div class="ja-qrow">
+  <div class="ja-qrow-top">
+    <div class="ja-chips">{chips}</div>
+    <span style="font-size:11px;padding:3px 10px;border-radius:999px;
+                 background:{bg};color:{fg};">{_esc(label)}</span>
+  </div>
+  <div class="ja-qrow-prev">{_esc(preview)}</div>
+  {more}
+  {tail}
+</div>
+"""
+
+
+def provider_pill(provider):
+    """Small pill naming the publishing provider; amber when only dry-run."""
+    if provider == "dry-run":
+        return (f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;'
+                f'background:#2a1c05;border:1px solid {AMBER};color:{AMBER};">'
+                f'Dry-run mode</span>')
+    return (f'<span style="font-size:11px;padding:3px 10px;border-radius:999px;'
+            f'background:#10301f;border:1px solid #1b4d31;color:{GREEN};">'
+            f'Live · {_esc(provider)}</span>')

@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS assets(
   feedback_tag TEXT, feedback_note TEXT,
   lessons_used INTEGER DEFAULT 0,
   provider TEXT,                          -- gemini | groq | mock: who wrote this asset
+  post_provider TEXT,                     -- dry-run | ayrshare: who published it
+  post_error TEXT,                        -- why the last publish attempt failed
   reviewed_at TEXT, post_id TEXT
 );
 CREATE TABLE IF NOT EXISTS lessons(
@@ -49,6 +51,10 @@ def init():
         have = {r[1] for r in c.execute("PRAGMA table_info(assets)")}
         if "provider" not in have:
             c.execute("ALTER TABLE assets ADD COLUMN provider TEXT")
+        if "post_provider" not in have:
+            c.execute("ALTER TABLE assets ADD COLUMN post_provider TEXT")
+        if "post_error" not in have:
+            c.execute("ALTER TABLE assets ADD COLUMN post_error TEXT")
         have_audit = {r[1] for r in c.execute("PRAGMA table_info(audit_log)")}
         if "prev_hash" not in have_audit:
             c.execute("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT")
@@ -156,3 +162,47 @@ def verify_chain():
                 return r["id"]
             expected_prev = r["hash"]
         return None
+
+
+# --- Project 2 worker helpers ------------------------------------------------
+
+def claim_asset(asset_id, actor="worker"):
+    """Move approved -> posting, but only if still approved.
+
+    The WHERE clause is the lock: SQLite applies the UPDATE atomically, so two
+    workers racing on the same asset produce exactly one rowcount of 1.
+    Returns True if this caller won the claim.
+    """
+    with conn() as c:
+        cur = c.execute(
+            "UPDATE assets SET status='posting' WHERE id=? AND status='approved'",
+            (asset_id,))
+        if cur.rowcount == 1:
+            log(c, asset_id, "claimed", actor, "approved -> posting")
+            return True
+        return False
+
+
+def mark_scheduled(asset_id, post_id, post_provider, actor="worker"):
+    with conn() as c:
+        c.execute("""UPDATE assets SET status='scheduled', post_id=?, post_provider=?,
+                     post_error=NULL WHERE id=?""",
+                  (post_id, post_provider, asset_id))
+        log(c, asset_id, "posted", actor, f"{post_provider} {post_id}")
+
+
+def mark_failed(asset_id, reason, actor="worker"):
+    with conn() as c:
+        c.execute("UPDATE assets SET status='failed', post_error=? WHERE id=?",
+                  (str(reason)[:500], asset_id))
+        log(c, asset_id, "post failed", actor, str(reason)[:200])
+
+
+def release_asset(asset_id, actor="worker"):
+    """Hand a claimed asset back to the queue (used on interrupt)."""
+    with conn() as c:
+        cur = c.execute(
+            "UPDATE assets SET status='approved' WHERE id=? AND status='posting'",
+            (asset_id,))
+        if cur.rowcount == 1:
+            log(c, asset_id, "released", actor, "posting -> approved")
