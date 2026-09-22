@@ -1,4 +1,5 @@
 import difflib
+import altair as alt
 import pandas as pd
 import streamlit as st
 import db, pipeline, review, theme
@@ -142,27 +143,264 @@ with queue:
 
 with insights:
     reviewed = [a for a in db.list_assets() if a["status"] in ("approved", "rejected", "scheduled")]
-    reviewed.sort(key=lambda a: a["reviewed_at"] or "")
-    if reviewed:
-        df = pd.DataFrame(reviewed)
-        df["rejected"] = (df["status"] == "rejected").astype(int)
-        df["edit_amount"] = [
-            round(1 - difflib.SequenceMatcher(None, o or "", c or "").ratio(), 3)
-            for o, c in zip(df["original_content"], df["content"])]
-        df["batch"] = [i // 4 + 1 for i in range(len(df))]
-        trend = df.groupby("batch")[["rejected", "edit_amount"]].mean()
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Reviewed", len(df))
-        m2.metric("Rejection Rate", f"{df['rejected'].mean():.0%}")
-        m3.metric("Lessons Stored", len(db.all_lessons()))
-        st.subheader("Is It Improving? (Per Batch Of 4 Reviews)")
-        st.line_chart(trend)
-    else:
-        st.info("Review Some Assets To See The Learning Curve.")
-    st.subheader("Lessons Learned Memory")
-    ls = db.all_lessons()
-    if ls:
-        st.dataframe(pd.DataFrame(ls)[["id", "brand", "platform", "tag", "note", "bad_example"]],
-                     use_container_width=True)
-    st.subheader("Audit Log")
-    st.dataframe(pd.DataFrame(db.audit()), use_container_width=True)
+    reviewed.sort(key=lambda a: a.get("reviewed_at") or a.get("created_at") or "")
+
+    batch_size = st.session_state.get("learning_batch_size", 5)
+    all_ls = db.all_lessons()
+    total_reviews = len(reviewed)
+
+    batches_data = []
+    if total_reviews > 0:
+        total_batches = (total_reviews + batch_size - 1) // batch_size
+        is_partial = (total_reviews % batch_size) != 0
+        for b in range(1, total_batches + 1):
+            s_idx = (b - 1) * batch_size
+            e_idx = min(b * batch_size, total_reviews)
+            b_slice = reviewed[s_idx:e_idx]
+            b_count = len(b_slice)
+            b_rej = sum(1 for a in b_slice if a["status"] == "rejected") / b_count
+            b_edits = [
+                round(1 - difflib.SequenceMatcher(None, o or "", c or "").ratio(), 3)
+                for o, c in zip((a.get("original_content") or "" for a in b_slice),
+                                (a.get("content") or "" for a in b_slice))
+            ]
+            b_edit_mean = sum(b_edits) / len(b_edits) if b_edits else 0.0
+            b_lessons = sum(
+                1 for a in b_slice
+                if a["status"] == "rejected" or (a.get("original_content") or "").strip() != (a.get("content") or "").strip()
+            )
+            lbl = f"Batch {b} (partial)" if (b == total_batches and is_partial) else f"Batch {b}"
+            batches_data.append({
+                "batch_num": b,
+                "label": lbl,
+                "count": b_count,
+                "rejection_rate": b_rej,
+                "edit_amount": b_edit_mean,
+                "lessons": b_lessons,
+            })
+
+    # 1. Overview
+    with st.container(key="section-overview"):
+        st.markdown(theme.section_label("Overview"), unsafe_allow_html=True)
+        if total_reviews > 0:
+            overall_rej = sum(1 for a in reviewed if a["status"] == "rejected") / total_reviews
+            latest = batches_data[-1]
+            has_prev = len(batches_data) >= 2
+            prev = batches_data[-2] if has_prev else None
+
+            rev_val = str(total_reviews)
+            if has_prev:
+                rev_diff = latest["count"] - prev["count"]
+                if rev_diff == 0:
+                    rev_trend = f"{latest['count']} in latest batch"
+                elif rev_diff > 0:
+                    rev_trend = f"+{rev_diff} vs prev batch"
+                else:
+                    rev_trend = f"{rev_diff} vs prev batch"
+                rev_color = theme.ACCENT
+            else:
+                rev_trend = f"{latest['count']} in first batch"
+                rev_color = theme.MUTED
+
+            rej_val = f"{overall_rej:.0%}"
+            if has_prev:
+                rej_diff = latest["rejection_rate"] - prev["rejection_rate"]
+                if rej_diff < 0:
+                    rej_trend = f"↓ {abs(rej_diff):.0%} vs prev batch"
+                    rej_color = theme.GREEN
+                elif rej_diff > 0:
+                    rej_trend = f"↑ {rej_diff:.0%} vs prev batch"
+                    rej_color = theme.RED
+                else:
+                    rej_trend = "0% vs prev batch"
+                    rej_color = theme.MUTED
+            else:
+                rej_trend = "First batch (baseline)"
+                rej_color = theme.MUTED
+
+            ls_val = str(len(all_ls))
+            if has_prev:
+                ls_diff = latest["lessons"] - prev["lessons"]
+                if ls_diff < 0:
+                    ls_trend = f"↓ {abs(ls_diff)} vs prev batch"
+                    ls_color = theme.GREEN
+                elif ls_diff > 0:
+                    ls_trend = f"↑ {ls_diff} vs prev batch"
+                    ls_color = theme.AMBER
+                else:
+                    ls_trend = "0 vs prev batch"
+                    ls_color = theme.MUTED
+            else:
+                ls_trend = f"{latest['lessons']} from first batch"
+                ls_color = theme.MUTED
+        else:
+            rev_val, rev_trend, rev_color = "0", "No reviews yet", theme.MUTED
+            rej_val, rej_trend, rej_color = "0%", "—", theme.MUTED
+            ls_val, ls_trend, ls_color = str(len(all_ls)), "—", theme.MUTED
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(theme.soft_metric_card("Reviewed", rev_val, rev_trend, rev_color),
+                        unsafe_allow_html=True)
+        with c2:
+            st.markdown(theme.soft_metric_card("Rejection rate", rej_val, rej_trend, rej_color),
+                        unsafe_allow_html=True)
+        with c3:
+            st.markdown(theme.soft_metric_card("Lessons stored", ls_val, ls_trend, ls_color),
+                        unsafe_allow_html=True)
+
+    # 2. Learning curve
+    with st.container(key="section-curve"):
+        st.markdown(theme.section_label("Learning curve"), unsafe_allow_html=True)
+        col_exp, col_size = st.columns([3, 1])
+        with col_exp:
+            st.markdown(f'<div style="font-size:12px;color:{theme.MUTED};margin-top:14px;">'
+                        f'Tracking rejection rate and human copy edit distance averaged across consecutive review batches over time.</div>',
+                        unsafe_allow_html=True)
+        with col_size:
+            selected_size = st.slider("Batch size", min_value=3, max_value=10, value=batch_size, step=1, key="learning_batch_size")
+
+        if total_reviews > 0:
+            if selected_size != batch_size:
+                b_size = selected_size
+                t_batches = (total_reviews + b_size - 1) // b_size
+                part = (total_reviews % b_size) != 0
+                chart_rows = []
+                for b in range(1, t_batches + 1):
+                    s_idx = (b - 1) * b_size
+                    e_idx = min(b * b_size, total_reviews)
+                    b_slice = reviewed[s_idx:e_idx]
+                    b_rej = sum(1 for a in b_slice if a["status"] == "rejected") / len(b_slice)
+                    b_edits = [
+                        round(1 - difflib.SequenceMatcher(None, o or "", c or "").ratio(), 3)
+                        for o, c in zip((a.get("original_content") or "" for a in b_slice),
+                                        (a.get("content") or "" for a in b_slice))
+                    ]
+                    b_edit_mean = sum(b_edits) / len(b_edits) if b_edits else 0.0
+                    lbl = f"Batch {b} (partial)" if (b == t_batches and part) else f"Batch {b}"
+                    chart_rows.append({"batch": lbl, "Rejection rate": b_rej, "Edit amount": b_edit_mean})
+            else:
+                chart_rows = [
+                    {"batch": bd["label"], "Rejection rate": bd["rejection_rate"], "Edit amount": bd["edit_amount"]}
+                    for bd in batches_data
+                ]
+
+            chart_df = pd.DataFrame(chart_rows)
+            melted = chart_df.melt(
+                id_vars=["batch"],
+                value_vars=["Rejection rate", "Edit amount"],
+                var_name="Series",
+                value_name="Rate"
+            )
+
+            chart = alt.Chart(melted).mark_line(point=True, strokeWidth=2).encode(
+                x=alt.X("batch:N", title="Batch", sort=None),
+                y=alt.Y(
+                    "Rate:Q",
+                    scale=alt.Scale(domain=[0, 1], clamp=True),
+                    axis=alt.Axis(format=".0%", tickCount=5, title=None)
+                ),
+                color=alt.Color(
+                    "Series:N",
+                    scale=alt.Scale(
+                        domain=["Rejection rate", "Edit amount"],
+                        range=[theme.RED, theme.GREEN]
+                    ),
+                    legend=alt.Legend(title=None, orient="top")
+                ),
+                tooltip=[
+                    alt.Tooltip("batch:N", title="Batch"),
+                    alt.Tooltip("Series:N", title="Series"),
+                    alt.Tooltip("Rate:Q", title="Rate", format=".1%")
+                ]
+            ).properties(height=260)
+
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("Review some assets to see the learning curve.")
+
+    # 3. Lessons
+    with st.container(key="section-lessons"):
+        st.markdown(theme.section_label("Lessons"), unsafe_allow_html=True)
+        if all_ls:
+            by_tag = {}
+            for l in all_ls:
+                tag = (l.get("tag") or "general").strip()
+                by_tag.setdefault(tag, []).append(l)
+
+            sorted_tags = sorted(by_tag.keys(), key=lambda t: len(by_tag[t]), reverse=True)
+            for tag in sorted_tags:
+                group = by_tag[tag]
+                count = len(group)
+                with st.expander(f"{tag} ({count})", expanded=False):
+                    notes = []
+                    seen_notes = set()
+                    for l in group:
+                        n = (l.get("note") or "").strip()
+                        if n and n not in seen_notes:
+                            seen_notes.add(n)
+                            notes.append(n)
+
+                    snippets = []
+                    seen_bads = set()
+                    for l in group:
+                        be = (l.get("bad_example") or "").strip()
+                        if be:
+                            snip = (be[:117] + "...") if len(be) > 120 else be
+                            if snip not in seen_bads:
+                                seen_bads.add(snip)
+                                snippets.append(snip)
+
+                    if notes:
+                        st.markdown(
+                            f'<div style="font-size:11px;font-weight:600;letter-spacing:0.5px;'
+                            f'color:{theme.ACCENT};margin-bottom:6px;">Notes</div>',
+                            unsafe_allow_html=True
+                        )
+                        for n in notes:
+                            st.markdown(f"- {n}")
+
+                    if snippets:
+                        st.markdown(
+                            f'<div style="font-size:11px;font-weight:600;letter-spacing:0.5px;'
+                            f'color:{theme.ACCENT};margin-top:10px;margin-bottom:6px;">Flagged Snippets</div>',
+                            unsafe_allow_html=True
+                        )
+                        for snip in snippets:
+                            st.markdown(
+                                f'<div style="font-size:11px;font-family:monospace;background:{theme.INSET};'
+                                f'border:1px solid {theme.CHIP_LINE};border-radius:6px;padding:6px 10px;'
+                                f'margin-bottom:6px;color:{theme.BODY};white-space:pre-wrap;">"{theme._esc(snip)}"</div>',
+                                unsafe_allow_html=True
+                            )
+
+                    if not notes and not snippets:
+                        st.caption("No notes or examples recorded for this tag.")
+        else:
+            st.info("No lessons recorded yet.")
+
+    # 4. Audit trail
+    with st.container(key="section-audit"):
+        st.markdown(theme.section_label("Audit trail"), unsafe_allow_html=True)
+        broken = db.verify_chain()
+        st.markdown(theme.audit_pill(broken), unsafe_allow_html=True)
+
+        with st.expander("Show full log", expanded=False):
+            show_chain = st.toggle("Show chain", value=False)
+            entries = db.audit()
+            cols = ["ts", "asset_id", "action", "actor", "detail"]
+            if show_chain:
+                cols.append("prev  hash")
+            if entries:
+                df_audit = pd.DataFrame(entries)
+                if show_chain:
+                    df_audit["prev  hash"] = [
+                        f"{(r.get('prev_hash') or '')[:4]:<4}  {(r.get('hash') or '')[:4]:<4}"
+                        for r in entries
+                    ]
+                st.dataframe(df_audit[[c for c in cols if c in df_audit.columns]],
+                             hide_index=True, use_container_width=True)
+            else:
+                st.dataframe(pd.DataFrame(columns=cols), hide_index=True, use_container_width=True)
+
+

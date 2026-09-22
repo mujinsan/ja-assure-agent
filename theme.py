@@ -81,8 +81,52 @@ CSS = f"""
   cursor:help;
 }}
 
-.stApp {{ background:{BG}; }}
-[data-testid="stHeader"] {{ background:transparent; }}
+html, body {{ background:{BG}; }}
+
+/* ---- pin vanta background iframe behind the whole app ---- */
+iframe[title="streamlit.components.v1.html"],
+[data-testid="stCustomComponentV1"],
+[data-testid="stCustomComponentV1"] > iframe {{
+  position: fixed !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 0 !important;
+  pointer-events: none !important;
+  border: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}}
+
+/* ---- transparent containers & content z-index ---- */
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stHeader"],
+.main,
+.block-container {{
+  background: transparent !important;
+}}
+
+[data-testid="stAppViewContainer"] > .main,
+.block-container,
+[data-testid="stHeader"] {{
+  position: relative;
+  z-index: 1;
+}}
+
+/* ---- dark overlay for main app ---- */
+.ja-main-overlay {{
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(10, 10, 12, 0.73);
+  z-index: 0;
+  pointer-events: none;
+}}
+
 .block-container {{ padding-top:2.2rem; max-width:1100px; }}
 
 /* ---- tabs: quiet labels, silver underline on the active one ---- */
@@ -154,6 +198,50 @@ CSS = f"""
 [data-testid="stAlert"] {{
   background:{INSET}; border:1px solid {CHIP_LINE}; border-radius:8px;
   color:{BODY}; font-size:12px;
+}}
+
+/* ---- hide Streamlit deploy button & main menu ---- */
+#MainMenu,
+[data-testid="stMainMenu"],
+[data-testid="stAppDeployButton"],
+.stDeployButton,
+[data-testid="stToolbarActions"],
+header [data-testid="stHeaderActionElements"] {{
+  display: none !important;
+  visibility: hidden !important;
+}}
+
+/* ---- section containers & scroll-driven entry animations ---- */
+[class*="st-key-section-"] {{
+  margin-bottom: 2.2rem;
+}}
+
+@media (prefers-reduced-motion: no-preference) {{
+  @supports ((animation-timeline: view()) and (animation-range: entry)) {{
+    @keyframes section-fade-rise {{
+      from {{
+        opacity: 0;
+        transform: translateY(20px);
+      }}
+      to {{
+        opacity: 1;
+        transform: translateY(0);
+      }}
+    }}
+    [class*="st-key-section-"] {{
+      animation: section-fade-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 25%;
+    }}
+  }}
+}}
+
+/* ---- soft metric cards fallback/native styling ---- */
+[data-testid="stMetric"] {{
+  background: {PANEL};
+  border: 1px solid {LINE};
+  border-radius: 12px;
+  padding: 14px 18px;
 }}
 </style>
 """
@@ -305,3 +393,36 @@ def lessons_box(count, notes):
 def post_body(text):
     return (f'<div style="font-size:13px;line-height:1.6;color:{BODY};margin-top:10px;'
             f'white-space:pre-wrap;">{_esc(text)}</div>')
+
+
+def audit_pill(broken_id=None):
+    if broken_id is None:
+        return (f'<span style="display:inline-block;font-size:11px;padding:3px 10px;'
+                f'border-radius:999px;background:#10301f;border:1px solid #1b4d31;color:{GREEN};">'
+                f'<span style="color:{DOT};">●</span> Audit chain verified</span>')
+    return (f'<span style="display:inline-block;font-size:11px;padding:3px 10px;'
+            f'border-radius:999px;background:#3d1414;border:1px solid {RED};color:#F5A3A3;">'
+            f'<span style="color:{RED};">●</span> Tampering detected at entry #{int(broken_id)}</span>')
+
+
+def section_label(text):
+    """Small uppercase section label with muted styling."""
+    return (f'<div style="font-size:11px;font-weight:600;text-transform:uppercase;'
+            f'letter-spacing:1px;color:{MUTED};margin-bottom:12px;">{_esc(text)}</div>')
+
+
+def soft_metric_card(label, value, trend_text=None, trend_color=None):
+    """Soft card for overview metrics with trend indicator."""
+    trend_html = ""
+    if trend_text:
+        color = trend_color or MUTED
+        trend_html = f'<div style="font-size:11px;color:{color};margin-top:6px;">{_esc(trend_text)}</div>'
+    return f"""
+<div style="background:{PANEL};border:1px solid {LINE};border-radius:12px;padding:14px 18px;">
+  <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.8px;color:{MUTED};font-weight:500;">{_esc(label)}</div>
+  <div style="font-family:{SERIF};font-size:32px;line-height:1.15;color:{HEAD};margin:6px 0 2px 0;">{_esc(value)}</div>
+  {trend_html}
+</div>
+"""
+
+

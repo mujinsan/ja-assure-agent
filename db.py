@@ -1,5 +1,5 @@
 """SQLite store. The `assets` table is the contract between Project 1 and Project 2."""
-import os, sqlite3
+import hashlib, os, sqlite3
 from datetime import datetime, timezone
 
 DB_PATH = os.getenv("DB_PATH", "ja_assure.db")
@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS lessons(
 );
 CREATE TABLE IF NOT EXISTS audit_log(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT, asset_id INTEGER, action TEXT, actor TEXT, detail TEXT
+  ts TEXT, asset_id INTEGER, action TEXT, actor TEXT, detail TEXT,
+  prev_hash TEXT, hash TEXT
 );
 """
 
@@ -35,6 +36,11 @@ def conn():
     c.row_factory = sqlite3.Row
     return c
 
+def compute_hash(prev_hash, ts, asset_id, action, actor, detail):
+    aid = "" if asset_id is None else str(asset_id)
+    payload = f"{prev_hash or ''}{ts or ''}{aid}{action or ''}{actor or ''}{detail or ''}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 def init():
     with conn() as c:
         c.executescript(SCHEMA)
@@ -43,10 +49,34 @@ def init():
         have = {r[1] for r in c.execute("PRAGMA table_info(assets)")}
         if "provider" not in have:
             c.execute("ALTER TABLE assets ADD COLUMN provider TEXT")
+        have_audit = {r[1] for r in c.execute("PRAGMA table_info(audit_log)")}
+        if "prev_hash" not in have_audit:
+            c.execute("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT")
+        if "hash" not in have_audit:
+            c.execute("ALTER TABLE audit_log ADD COLUMN hash TEXT")
+
+        rows = c.execute(
+            "SELECT id, ts, asset_id, action, actor, detail, prev_hash, hash "
+            "FROM audit_log ORDER BY id ASC"
+        ).fetchall()
+        if rows and any(r["hash"] is None for r in rows):
+            last_hash = "GENESIS"
+            for r in rows:
+                if r["hash"] is None:
+                    prev = r["prev_hash"] or last_hash
+                    h = compute_hash(prev, r["ts"], r["asset_id"], r["action"], r["actor"], r["detail"])
+                    c.execute("UPDATE audit_log SET prev_hash=?, hash=? WHERE id=?", (prev, h, r["id"]))
+                    last_hash = h
+                else:
+                    last_hash = r["hash"]
 
 def log(c, asset_id, action, actor, detail=""):
-    c.execute("INSERT INTO audit_log(ts,asset_id,action,actor,detail) VALUES(?,?,?,?,?)",
-              (now(), asset_id, action, actor, detail))
+    t = now()
+    last = c.execute("SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
+    prev_hash = last["hash"] if (last and last["hash"]) else "GENESIS"
+    h = compute_hash(prev_hash, t, asset_id, action, actor, detail)
+    c.execute("INSERT INTO audit_log(ts,asset_id,action,actor,detail,prev_hash,hash) VALUES(?,?,?,?,?,?,?)",
+              (t, asset_id, action, actor, detail, prev_hash, h))
 
 def insert_asset(**a):
     with conn() as c:
@@ -107,3 +137,22 @@ def all_lessons():
 def audit():
     with conn() as c:
         return [dict(r) for r in c.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 100")]
+
+def verify_chain():
+    """Recomputes the chain and returns the first broken entry id or None."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT id, ts, asset_id, action, actor, detail, prev_hash, hash "
+            "FROM audit_log ORDER BY id ASC"
+        ).fetchall()
+        expected_prev = "GENESIS"
+        for r in rows:
+            if r["prev_hash"] != expected_prev:
+                return r["id"]
+            expected_hash = compute_hash(
+                expected_prev, r["ts"], r["asset_id"], r["action"], r["actor"], r["detail"]
+            )
+            if r["hash"] != expected_hash:
+                return r["id"]
+            expected_prev = r["hash"]
+        return None
